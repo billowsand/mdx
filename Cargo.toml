@@ -1,0 +1,24 @@
+[package]
+name = "mdx"
+version = "1.0.0"
+edition = "2021"
+authors = ["marmot"]
+description = "Unified markdown converter: docx/tex × official/research"
+
+[[bin]]
+name = "mdx"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+docx-rs = "0.4"
+regex = "1"
+anyhow = "1"
+walkdir = "2"
+tempfile = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

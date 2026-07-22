@@ -1,0 +1,61 @@
+%!TEX program = xelatex
+\documentclass{md2tex}
+
+% 参考文献设置（保留在主文件，便于后处理自动移除）
+\usepackage[style=gb7714-2015]{biblatex}
+\addbibresource{references.bib}
+\renewcommand{\bibname}{参考文献}
+
+% 论文封面信息
+$if(title)$
+\newcommand{\papertitle}{$title$}
+$else$
+\newcommand{\papertitle}{文档标题}
+$endif$
+\newcommand{\securitylevel}{$security$}
+\newcommand{\doctype}{$doctype$}
+\newcommand{\docnumber}{$docnumber$}
+\newcommand{\docversion}{$docversion$}
+\newcommand{\institution}{$institution$}
+\newcommand{\dateofsubmit}{$submitdate$}
+
+\begin{document}
+
+% 封面
+\begin{titlepage}
+  \thispagestyle{empty}
+  {\noindent \heiti\enhei \zihao{4} 密级：\securitylevel \hfill 编号：\docnumber \par}
+  \vspace{8pt}
+  {\noindent \heiti\enhei \zihao{4} 版本：\docversion \hfill \doctype \par}
+  \vfill
+  \begin{center}
+    {\bs\zihao{1}\papertitle\par}
+  \end{center}
+  \vfill
+  \begin{center}
+    {\zihao{3} \heiti\enhei \institution\par}
+    \vspace{16pt}
+    {\zihao{4} \bfseries \dateofsubmit\par}
+  \end{center}
+  \vspace{60pt}
+\end{titlepage}
+\clearemptydoublepage
+
+% 目录
+\frontmatter
+\setcounter{tocdepth}{1}
+\ctexset{contentsname={\makebox[\textwidth][c]{\heiti\enhei\zihao{-2}目录}}}
+\tableofcontents
+\cleardoublepage
+\mainmatter
+
+\vspace{28pt}
+
+% 正文
+$body$
+
+% 参考文献
+\nocite{*}
+\printbibliography
+
+\end{document}

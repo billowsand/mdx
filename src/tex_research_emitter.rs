@@ -1,0 +1,900 @@
+//! 研究报告 → tex pipeline（纯 Rust 实现，不依赖 pandoc）。
+//!
+//! 与 tex_official 的主要差异：
+//! - 文档类：ctexbook + md2tex.cls
+//! - 标题格式：H2 → 第X章，H3 → X.Y，H4 → X.Y.Z，H5 → subsubsection
+//! - 列表前缀：1. 2. 3. / (1) (2) / a. b. / I. II. / (A) (B) / 1) 2)
+//! - 表格：使用 longtblr 环境
+//! - 支持特殊章节标记：Abstract / Appendix / Changelog / Body
+
+use crate::common::ast::{Block, Inline, MarkerKind};
+use crate::common::table_to_longtblr::emit_longtblr;
+
+/// 文档模式：控制特殊章节的处理方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionMode {
+    Normal,    // 普通正文模式
+    Abstract,  // 摘要模式：收集内容，包装 \begin{abstract}
+    Appendix,  // 附录模式
+    Changelog, // 版本变更记录：不编号
+    Reference, // 参考文献：不编号
+}
+
+/// 研究报告 tex emitter
+pub struct TexResearchEmitter {
+    out: String,
+    /// 摘要收集（摘要模式下收集的内容）
+    abstract_content: Vec<String>,
+    /// 当前是否在摘要模式
+    in_abstract: bool,
+    /// 当前章节模式
+    mode: SectionMode,
+    /// 章节计数器
+    chapter_num: usize,
+    /// 小节计数器
+    section_num: usize,
+    /// 子小节计数器
+    subsection_num: usize,
+    /// 附录索引
+    appendix_idx: usize,
+    /// 是否已经输出过 \appendix
+    has_emitted_appendix: bool,
+    /// 附录段内是否已用 H1 开章（是则 H2 起整体下移一级：H2→section）
+    appendix_saw_h1: bool,
+    /// 摘要模式下是否已经跳过第一个标题
+    abstract_skipped_heading: bool,
+    /// 版本变更记录模式下是否已经输出标题
+    changelog_heading_done: bool,
+    /// 参考文献模式下是否已经输出标题
+    reference_heading_done: bool,
+    /// 列表状态
+    l1: usize,
+    l2: usize,
+    l3: usize,
+    l4: usize,
+    l5: usize,
+    l6: usize,
+    in_list: bool,
+    list_level: u8,
+}
+
+impl TexResearchEmitter {
+    pub fn new() -> Self {
+        Self {
+            out: String::new(),
+            abstract_content: Vec::new(),
+            in_abstract: false,
+            mode: SectionMode::Normal,
+            chapter_num: 0,
+            section_num: 0,
+            subsection_num: 0,
+            appendix_idx: 0,
+            has_emitted_appendix: false,
+            appendix_saw_h1: false,
+            abstract_skipped_heading: false,
+            changelog_heading_done: false,
+            reference_heading_done: false,
+            l1: 0,
+            l2: 0,
+            l3: 0,
+            l4: 0,
+            l5: 0,
+            l6: 0,
+            in_list: false,
+            list_level: 0,
+        }
+    }
+
+    pub fn into_body(self) -> String {
+        self.out
+    }
+
+    pub fn emit_all(&mut self, blocks: &[Block]) {
+        for b in blocks {
+            self.emit_block(b);
+        }
+    }
+
+    fn emit_block(&mut self, block: &Block) {
+        match block {
+            Block::Heading { level, text } => {
+                self.reset_list();
+                self.emit_heading(*level, text);
+            }
+            Block::Paragraph(inlines) => {
+                self.reset_list();
+                self.emit_paragraph(inlines);
+            }
+            Block::List {
+                ordered: _,
+                level,
+                content,
+            } => {
+                self.emit_list_item(*level, content);
+            }
+            Block::Table { rows, caption } => {
+                self.reset_list();
+                self.emit_table(rows, caption.as_deref());
+            }
+            Block::Marker(kind) => {
+                self.handle_marker(kind);
+            }
+            Block::CodeBlock { lang, content } => {
+                self.emit_code_block(lang, content);
+            }
+            Block::Empty => {
+                // 忽略空行
+            }
+        }
+    }
+
+    fn handle_marker(&mut self, kind: &MarkerKind) {
+        match kind {
+            MarkerKind::Abstract => {
+                self.mode = SectionMode::Abstract;
+                self.in_abstract = true;
+                self.abstract_skipped_heading = false;
+            }
+            MarkerKind::Appendix => {
+                // 如果之前在摘要模式，先完成摘要
+                if self.in_abstract {
+                    self.finish_abstract();
+                }
+                self.mode = SectionMode::Appendix;
+                if !self.has_emitted_appendix {
+                    self.out.push_str(
+                        "\\appendix
+
+",
+                    );
+                    self.has_emitted_appendix = true;
+                }
+                self.appendix_idx = 0;
+                self.appendix_saw_h1 = false;
+            }
+            MarkerKind::Changelog => {
+                // 如果之前在摘要模式，先完成摘要
+                if self.in_abstract {
+                    self.finish_abstract();
+                }
+                self.mode = SectionMode::Changelog;
+                self.changelog_heading_done = false;
+                self.reset_counters();
+            }
+            MarkerKind::Reference => {
+                // 如果之前在摘要模式，先完成摘要
+                if self.in_abstract {
+                    self.finish_abstract();
+                }
+                self.mode = SectionMode::Reference;
+                self.out.push_str(
+                    "\\chapter*{参考文献}\n\\addcontentsline{toc}{chapter}{参考文献}\n\n",
+                );
+                self.reference_heading_done = true;
+                self.reset_counters();
+            }
+            MarkerKind::Body => {
+                // 如果之前在摘要模式，先完成摘要
+                if self.in_abstract {
+                    self.finish_abstract();
+                }
+                self.mode = SectionMode::Normal;
+                self.reset_counters();
+            }
+        }
+    }
+
+    fn reset_counters(&mut self) {
+        self.chapter_num = 0;
+        self.section_num = 0;
+        self.subsection_num = 0;
+    }
+
+    fn emit_heading(&mut self, level: u8, text: &str) {
+        let escaped = escape_latex(text);
+
+        if self.in_abstract {
+            if !self.abstract_skipped_heading {
+                self.abstract_skipped_heading = true;
+            } else {
+                self.abstract_content
+                    .push(format!("\\textbf{{{}}}", escaped));
+            }
+            return;
+        }
+
+        if self.mode == SectionMode::Changelog {
+            if !self.changelog_heading_done {
+                self.out.push_str(&format!("\\chapter*{{{}}}\n\n", escaped));
+                self.changelog_heading_done = true;
+            } else {
+                self.out.push_str(&format!("\\section*{{{}}}\n\n", escaped));
+            }
+            return;
+        }
+
+        if self.mode == SectionMode::Reference {
+            if !self.reference_heading_done {
+                self.out.push_str(&format!("\\chapter*{{{}}}\n\n", escaped));
+                self.reference_heading_done = true;
+            } else {
+                self.out.push_str(&format!("\\section*{{{}}}\n\n", escaped));
+            }
+            return;
+        }
+
+        if self.mode == SectionMode::Appendix {
+            // 附录模式：\appendix 后 LaTeX 自动生成 "附录A / B / ..." 编号。
+            // 两种写法兼容：
+            // - 附录以 H1 开章（"# 附录A ..."）：H1→chapter，H2 起下移一级；
+            // - 仅用 <!-- [附录] --> 标记：H2→chapter，H3→section（沿用旧约定）。
+            if level == 1 {
+                self.appendix_saw_h1 = true;
+            }
+            let shifted = self.appendix_saw_h1;
+            match (level, shifted) {
+                (1, _) | (2, false) => {
+                    self.appendix_idx += 1;
+                    self.out
+                        .push_str(&format!("\\chapter{{{}}}\\par\n\n", escaped));
+                }
+                (2, true) | (3, false) => {
+                    self.out
+                        .push_str(&format!("\\section{{{}}}\\par\n\n", escaped));
+                }
+                (3, true) | (4, false) => {
+                    self.out
+                        .push_str(&format!("\\subsection{{{}}}\\par\n\n", escaped));
+                }
+                _ => {
+                    self.out
+                        .push_str(&format!("\\subsubsection{{{}}}\\par\n\n", escaped));
+                }
+            }
+            return;
+        }
+
+        match level {
+            // level 1/2 → \chapter
+            1 | 2 => {
+                self.chapter_num += 1;
+                self.section_num = 0;
+                self.subsection_num = 0;
+                self.out
+                    .push_str(&format!("\\chapter{{{}}}\\par\n\n", escaped));
+            }
+            // level 3 → \section
+            3 => {
+                self.section_num += 1;
+                self.subsection_num = 0;
+                self.out
+                    .push_str(&format!("\\section{{{}}}\\par\n\n", escaped));
+            }
+            // level 4 → \subsection
+            4 => {
+                self.subsection_num += 1;
+                self.out
+                    .push_str(&format!("\\subsection{{{}}}\\par\n\n", escaped));
+            }
+            // level 5 → \subsubsection
+            5 => {
+                self.out
+                    .push_str(&format!("\\subsubsection{{{}}}\\par\n\n", escaped));
+            }
+            // level 6+ → 忽略
+            _ => {}
+        }
+    }
+
+    fn emit_paragraph(&mut self, inlines: &[Inline]) {
+        let body = render_inlines(inlines);
+        if body.trim().is_empty() {
+            return;
+        }
+
+        if self.in_abstract {
+            // 摘要模式：收集内容
+            self.abstract_content.push(body.clone());
+            return;
+        }
+
+        self.out.push_str(&body);
+        self.out.push_str(
+            "\\par
+
+",
+        );
+    }
+
+    fn emit_table(&mut self, rows: &[Vec<String>], caption: Option<&str>) {
+        if rows.is_empty() {
+            return;
+        }
+
+        if self.in_abstract {
+            // 摘要模式：收集表格
+            let table_latex = emit_longtblr(rows, caption);
+            self.abstract_content.push(table_latex);
+            return;
+        }
+
+        let table_latex = emit_longtblr(rows, caption);
+        self.out.push_str(&table_latex);
+        self.out.push_str(
+            "
+
+",
+        );
+    }
+
+    fn emit_code_block(&mut self, lang: &Option<String>, content: &str) {
+        if self.in_abstract {
+            return;
+        }
+
+        let lang_str = lang.as_deref().unwrap_or("");
+        self.out.push_str("\\begin{lstlisting}");
+        if let Some(language) = listings_language(lang_str) {
+            self.out.push_str("[language=");
+            self.out.push_str(language);
+            self.out.push(']');
+        }
+        self.out.push('\n');
+        self.out.push_str(content);
+        self.out.push_str(
+            "\n\\end{lstlisting}
+
+",
+        );
+    }
+
+    fn emit_list_item(&mut self, level: u8, content: &[Inline]) {
+        let prefix = self.list_prefix(level);
+        let body = render_inlines(content);
+
+        if self.in_abstract {
+            self.abstract_content.push(format!("{}{}", prefix, body));
+            return;
+        }
+
+        self.out.push_str(&format!("{}{}\\par\n\n", prefix, body));
+        self.in_list = true;
+        self.list_level = level;
+    }
+
+    fn reset_list(&mut self) {
+        self.in_list = false;
+        self.list_level = 0;
+        self.l1 = 0;
+        self.l2 = 0;
+        self.l3 = 0;
+        self.l4 = 0;
+        self.l5 = 0;
+        self.l6 = 0;
+    }
+
+    /// 列表前缀循环
+    /// level 1: 1. 2. 3.
+    /// level 2: (1) (2) (3)
+    /// level 3: a. b. c.
+    /// level 4: I. II. III.
+    /// level 5: (A) (B) (C)
+    /// level 6: 1) 2) 3)
+    fn list_prefix(&mut self, level: u8) -> String {
+        match level {
+            1 => {
+                if !self.in_list || self.list_level > 1 {
+                    self.l2 = 0;
+                    self.l3 = 0;
+                    self.l4 = 0;
+                    self.l5 = 0;
+                    self.l6 = 0;
+                }
+                if !self.in_list {
+                    self.l1 = 0;
+                }
+                self.l1 += 1;
+                if self.mode == SectionMode::Reference {
+                    format!("[{}] ", self.l1)
+                } else {
+                    format!("{}. ", self.l1)
+                }
+            }
+            2 => {
+                if !self.in_list || self.list_level != 2 {
+                    if self.list_level > 2 {
+                        self.l3 = 0;
+                        self.l4 = 0;
+                        self.l5 = 0;
+                        self.l6 = 0;
+                    }
+                    if !self.in_list || self.list_level < 2 {
+                        self.l2 = 0;
+                        self.l3 = 0;
+                        self.l4 = 0;
+                        self.l5 = 0;
+                        self.l6 = 0;
+                    }
+                }
+                self.l2 += 1;
+                format!("({}) ", self.l2)
+            }
+            3 => {
+                if !self.in_list || self.list_level < 3 {
+                    self.l3 = 0;
+                    self.l4 = 0;
+                    self.l5 = 0;
+                    self.l6 = 0;
+                }
+                self.l3 += 1;
+                let ch = (b'a' + ((self.l3 - 1) % 26) as u8) as char;
+                format!("{}. ", ch)
+            }
+            4 => {
+                if !self.in_list || self.list_level < 4 {
+                    self.l4 = 0;
+                    self.l5 = 0;
+                    self.l6 = 0;
+                }
+                self.l4 += 1;
+                let roman = int_to_roman(self.l4);
+                format!("{}. ", roman)
+            }
+            5 => {
+                if !self.in_list || self.list_level < 5 {
+                    self.l5 = 0;
+                    self.l6 = 0;
+                }
+                self.l5 += 1;
+                let ch = (b'A' + ((self.l5 - 1) % 26) as u8) as char;
+                format!("({}) ", ch)
+            }
+            6 => {
+                if !self.in_list || self.list_level < 6 {
+                    self.l6 = 0;
+                }
+                self.l6 += 1;
+                format!("{}) ", self.l6)
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// 完成摘要收集，输出摘要环境
+    pub fn finish_abstract(&mut self) {
+        if !self.abstract_content.is_empty() {
+            self.out.push_str("\\begin{abstract}\n");
+            for item in &self.abstract_content {
+                self.out.push_str(item);
+                self.out.push_str(
+                    "\\par
+
+",
+                );
+            }
+            self.out.push_str(
+                "\\end{abstract}
+
+",
+            );
+            self.abstract_content.clear();
+        }
+        self.in_abstract = false;
+        self.mode = SectionMode::Normal;
+    }
+}
+
+impl Default for TexResearchEmitter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ========== 字符串工具 ==========
+
+fn render_inlines(inlines: &[Inline]) -> String {
+    let mut s = String::new();
+    for ip in inlines {
+        match ip {
+            Inline::Text(t) => s.push_str(&escape_latex(t)),
+            Inline::Bold(t) => {
+                s.push_str("\\textbf{");
+                s.push_str(&escape_latex(t));
+                s.push('}');
+            }
+            Inline::Italic(t) => {
+                s.push_str("\\textit{");
+                s.push_str(&escape_latex(t));
+                s.push('}');
+            }
+            Inline::Code(t) => {
+                s.push_str("\\texttt{");
+                s.push_str(&escape_latex(t));
+                s.push('}');
+            }
+            Inline::Link { text, url } => {
+                s.push_str("\\href{");
+                s.push_str(&escape_href_url(url));
+                s.push_str("}{");
+                s.push_str(&escape_latex(text));
+                s.push('}');
+            }
+        }
+    }
+    s
+}
+
+/// LaTeX 9 个特殊字符的转义 + 反斜杠。
+fn escape_latex(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\textbackslash{}"),
+            '&' => out.push_str("\\&"),
+            '%' => out.push_str("\\%"),
+            '$' => out.push_str("\\$"),
+            '#' => out.push_str("\\#"),
+            '_' => out.push_str("\\_"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            '~' => out.push_str("\\textasciitilde{}"),
+            '^' => out.push_str("\\textasciicircum{}"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn escape_href_url(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\textbackslash{}"),
+            '%' => out.push_str("\\%"),
+            '#' => out.push_str("\\#"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn listings_language(lang: &str) -> Option<&'static str> {
+    match lang.to_ascii_lowercase().as_str() {
+        "" | "text" | "plain" | "plaintext" => None,
+        "rust" | "rs" => Some("Rust"),
+        "python" | "py" => Some("Python"),
+        "cpp" | "c++" | "cc" | "cxx" => Some("C++"),
+        "c" => Some("C"),
+        "java" => Some("Java"),
+        "javascript" | "js" => Some("JavaScript"),
+        "typescript" | "ts" => Some("JavaScript"),
+        "bash" | "sh" | "shell" => Some("bash"),
+        "html" => Some("HTML"),
+        "xml" => Some("XML"),
+        "sql" => Some("SQL"),
+        "json" => None,
+        _ => None,
+    }
+}
+
+/// 整数转罗马数字
+fn int_to_roman(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let values = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut result = String::new();
+    let mut remaining = n;
+    for (value, symbol) in values {
+        while remaining >= value {
+            result.push_str(symbol);
+            remaining -= value;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::ast::MarkerKind;
+
+    #[test]
+    fn test_chapter_heading() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "引言".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\chapter{引言}"));
+    }
+
+    #[test]
+    fn test_section_heading() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 3,
+            text: "背景".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\section{背景}"));
+    }
+
+    #[test]
+    fn test_abstract_marker() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Marker(MarkerKind::Abstract));
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("这是摘要内容".into())]));
+        e.finish_abstract();
+        let body = e.into_body();
+        assert!(body.contains("\\begin{abstract}"));
+        assert!(body.contains("\\end{abstract}"));
+    }
+
+    #[test]
+    fn test_list_prefix() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("第一项".into())],
+        });
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("第二项".into())],
+        });
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 2,
+            content: vec![Inline::Text("子项".into())],
+        });
+        let body = e.into_body();
+        assert!(body.contains("1. "));
+        assert!(body.contains("2. "));
+        assert!(body.contains("(1) "));
+    }
+
+    #[test]
+    fn test_escape_latex() {
+        assert_eq!(
+            escape_latex("a&b%c$d#e_f{g}h~i^j"),
+            "a\\&b\\%c\\$d\\#e\\_f\\{g\\}h\\textasciitilde{}i\\textasciicircum{}j"
+        );
+    }
+
+    #[test]
+    fn test_appendix_marker() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Marker(MarkerKind::Appendix));
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "主要符号表".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\appendix"));
+        assert!(body.contains("\\chapter{主要符号表}"));
+    }
+
+    #[test]
+    fn test_appendix_h1_shifts_inner_levels() {
+        // 附录以 H1 开章：H1→chapter，后续 H2→section、H3→subsection
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Marker(MarkerKind::Appendix));
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "关键算法模型清单".into(),
+        });
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "能力簇总览".into(),
+        });
+        e.emit_block(&Block::Heading {
+            level: 3,
+            text: "第1簇 态势发现".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\chapter{关键算法模型清单}"));
+        assert!(body.contains("\\section{能力簇总览}"));
+        assert!(body.contains("\\subsection{第1簇 态势发现}"));
+        assert!(!body.contains("\\chapter{能力簇总览}"));
+    }
+
+    #[test]
+    fn test_changelog_marker() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Marker(MarkerKind::Changelog));
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "版本变更记录".into(),
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text(
+            "v1.0 初始版本".into(),
+        )]));
+        let body = e.into_body();
+        assert!(body.contains("\\chapter*{版本变更记录}"));
+        assert!(body.contains("v1.0 初始版本"));
+    }
+
+    #[test]
+    fn test_body_marker_resets_counters() {
+        let mut e = TexResearchEmitter::new();
+        // 先有一些章节
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "第一章".into(),
+        });
+        // 遇到 Body 标记
+        e.emit_block(&Block::Marker(MarkerKind::Body));
+        // 继续标题应该重新开始计数
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "新的第一章".into(),
+        });
+        let body = e.into_body();
+        // 应该包含两个章节
+        assert!(body.contains("\\chapter{第一章}"));
+        assert!(body.contains("\\chapter{新的第一章}"));
+    }
+
+    #[test]
+    fn test_abstract_with_multiple_paragraphs() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Marker(MarkerKind::Abstract));
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("第一段".into())]));
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("第二段".into())]));
+        e.finish_abstract();
+        let body = e.into_body();
+        assert!(body.contains("\\begin{abstract}"));
+        assert!(body.contains("第一段"));
+        assert!(body.contains("第二段"));
+        assert!(body.contains("\\end{abstract}"));
+    }
+
+    #[test]
+    fn test_table_in_normal_mode() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["1".into(), "2".into()],
+            ],
+            caption: None,
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\begin{longtblr}"));
+        assert!(body.contains("\\end{longtblr}"));
+    }
+
+    #[test]
+    fn test_table_cell_bold_italic() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["**重点**".into(), "*斜体*".into()],
+            ],
+            caption: None,
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\textbf{重点}"));
+        assert!(body.contains("\\textit{斜体}"));
+        // 行内标记不应作为字面量出现
+        assert!(!body.contains("**重点**"));
+    }
+
+    #[test]
+    fn test_table_caption() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["1".into(), "2".into()],
+            ],
+            caption: Some("测试表格".into()),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\begin{longtblr}[caption={测试表格}]"));
+    }
+
+    #[test]
+    fn test_subsection_heading() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 4,
+            text: "子小节".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\subsection{子小节}"));
+    }
+
+    #[test]
+    fn test_subsubsection_heading() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 5,
+            text: "四级标题".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\subsubsection{四级标题}"));
+    }
+
+    #[test]
+    fn test_h2_maps_to_chapter_like_pandoc_shift() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "引言".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\chapter{引言}"));
+    }
+
+    #[test]
+    fn test_code_block() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::CodeBlock {
+            lang: Some("rust".into()),
+            content: "fn main() {}".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\begin{lstlisting}[language=Rust]"));
+        assert!(body.contains("fn main()"));
+        assert!(body.contains("\\end{lstlisting}"));
+    }
+
+    #[test]
+    fn test_code_block_sanitizes_unknown_language() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::CodeBlock {
+            lang: Some("rust,caption={x}".into()),
+            content: "fn main() {}".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\begin{lstlisting}\n"));
+        assert!(!body.contains("caption"));
+    }
+
+    #[test]
+    fn test_link_escapes_latex() {
+        let rendered = render_inlines(&[Inline::Link {
+            text: "a_b".into(),
+            url: "https://e.test/a#b%20".into(),
+        }]);
+        assert_eq!(rendered, "\\href{https://e.test/a\\#b\\%20}{a\\_b}");
+    }
+
+    #[test]
+    fn test_appendix_emitted_after_normal_chapter() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "正文".into(),
+        });
+        e.emit_block(&Block::Marker(MarkerKind::Appendix));
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "附录".into(),
+        });
+        let body = e.into_body();
+        assert!(body.contains("\\appendix"));
+        assert!(body.contains("\\chapter{附录}"));
+    }
+}

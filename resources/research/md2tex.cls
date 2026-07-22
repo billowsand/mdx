@@ -1,0 +1,352 @@
+%% md2tex.cls
+%% Markdown to TeX document class
+%% 2026/04/21 v1.0
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesClass{md2tex}[2026/04/21 v1.0 Markdown to TeX document class]
+
+%% ============================================================
+%% 基类
+%% ============================================================
+\LoadClass[linespread=1,openright,twoside]{ctexbook}
+
+%% ============================================================
+%% 包加载
+%% ============================================================
+\RequirePackage{geometry}
+\RequirePackage{calc}
+\RequirePackage{fancyhdr}
+\RequirePackage{enumitem}
+\RequirePackage{graphicx}
+\RequirePackage{xcolor}
+\RequirePackage{booktabs}
+\RequirePackage{array}
+\RequirePackage{pifont}
+\RequirePackage{refcount}
+\RequirePackage{ifthen}
+\RequirePackage{ragged2e}
+\RequirePackage{paralist}
+\RequirePackage{longtable}
+\RequirePackage{etoolbox}
+\RequirePackage{pdflscape}
+\RequirePackage{float}
+\RequirePackage{caption}
+\RequirePackage{tabularray}
+\RequirePackage{tikz}
+\RequirePackage{titlesec}
+\RequirePackage{tocloft}
+\RequirePackage{listings}
+
+%% hyperref 放在最后，避免冲突
+\RequirePackage[unicode,CJKbookmarks=true,bookmarksopen=true,bookmarksnumbered=true,linktoc=all]{hyperref}
+
+%% ============================================================
+%% hyperref 设置
+%% ============================================================
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=blue,
+  pdfstartview=FitH
+}
+
+%% ============================================================
+%% 字体配置
+%% ============================================================
+\newcommand{\mainfont}{FZShuSong-Z01}
+\newcommand{\maintitle}{FZXiaoBiaoSong-B05}
+\newcommand{\mainbold}{FZHei-B01}
+\newcommand{\mainitalic}{FZKai-Z03}
+\newcommand{\mainssf}{FZShuSong-Z01}
+\newcommand{\enmainfont}{TeX Gyre Termes}
+\newcommand{\codefont}{LXGW Bright Code}
+
+\setCJKmainfont[ItalicFont={\mainitalic}, AutoFakeBold=true]{\mainfont}
+\setmainfont{\enmainfont}
+\setmonofont{\mainbold}
+\setCJKfamilyfont{xbs}{\maintitle}
+\newcommand{\bs}{\CJKfamily{xbs}}
+\setCJKfamilyfont{kaiti}{\mainitalic}
+\newcommand{\kai}{\CJKfamily{kaiti}}
+\setCJKfamilyfont{songti}{\mainfont}
+\newcommand{\song}{\CJKfamily{songti}}
+\setCJKfamilyfont{fangsong}{\mainssf}
+\newcommand{\fs}{\CJKfamily{fangsong}}
+\newfontfamily\encircle{\mainfont}
+\newfontfamily\enxbs{\maintitle}
+\newfontfamily\ennumber{\mainfont}
+\newfontfamily\enhei{\mainbold}
+
+%% 代码字体（LXGW Bright Code）
+\setCJKmonofont{\codefont}
+\setCJKfamilyfont{code}{\codefont}
+\newfontfamily\codefamily{\codefont}
+\newcommand{\codefontstyle}{\CJKfamily{code}\codefamily}
+
+%% ============================================================
+%% 标题格式
+%% ============================================================
+\setcounter{secnumdepth}{3}
+\renewcommand{\thesection}{\thechapter.\arabic{section}}
+\renewcommand{\thesubsection}{\thechapter.\arabic{section}.\arabic{subsection}}
+\renewcommand{\thesubsubsection}{\thechapter.\arabic{section}.\arabic{subsection}.\arabic{subsubsection}}
+
+\titleformat{\section}{\heiti\enhei}{\thesection}{0.5em}{}
+\titleformat{\subsection}{\heiti\enhei}{\thesubsection}{0.5em}{}[]
+\titleformat{\subsubsection}{\heiti\enhei}{\thesubsubsection}{0.5em}{}[]
+\titlespacing{\section}{2em}{0pt}{0pt}
+\titlespacing{\subsection}{2em}{0pt}{0pt}
+\titlespacing{\subsubsection}{2em}{0pt}{0pt}
+
+%% 章节样式：二号、居中、黑体；编号"第1章"
+\ctexset{
+  chapter = {
+    format = \centering\zihao{-2}\heiti\enhei,
+    nameformat = \heiti\enhei,
+    numberformat = \heiti\enhei,
+    name = {第,章},
+    number = \arabic{chapter}
+  },
+  appendix = {
+    name = {附录,},
+    number = \Alph{chapter}
+  },
+}
+
+%% ============================================================
+%% 目录格式
+%% ============================================================
+\renewcommand{\cftchapfont}{\heiti\enhei}
+\setlength{\cftbeforechapskip}{\cftbeforesecskip}
+
+%% ============================================================
+%% 页面设置
+%% ============================================================
+\renewcommand\headrulewidth{0pt}
+\lhead{} \chead{} \rhead{}
+\lfoot{} \cfoot{{\zihao{4} — \ \ennumber\thepage \  — }} \rfoot{}
+\pagestyle{fancy}
+\fancypagestyle{plain}{
+  \lhead{} \chead{} \rhead{}
+  \lfoot{} \cfoot{{\zihao{4} — \ \ennumber\thepage \  — }} \rfoot{}
+  \renewcommand\headrulewidth{0pt}
+}
+\geometry{
+  a4paper,
+  left=28mm plus 1mm minus 1mm,
+  height=225mm,
+  top=37mm plus 1mm minus 1mm,
+  width=156mm,
+}
+
+%% ============================================================
+%% 浮动体标题
+%% ============================================================
+\renewcommand\figurename{图}
+\renewcommand\tablename{表}
+\captionsetup{labelsep=space}
+
+%% ============================================================
+%% 列表设置
+%% ============================================================
+\setenumerate[1]{leftmargin=0pt,parsep=0pt,topsep=0pt,itemsep=0pt,labelsep=0pt,itemindent=\widthof{一二},listparindent=0pt}
+
+%% ============================================================
+%% 字号与段落
+%% ============================================================
+\providecommand{\passthrough}[1]{#1}
+\renewcommand\normalsize{%
+  \@setfontsize\normalsize{14bp}{24pt}%
+  \abovedisplayskip 0bp%
+  \abovedisplayshortskip 0bp%
+  \belowdisplayshortskip 0bp%
+  \belowdisplayskip \abovedisplayskip
+}
+\normalsize
+\ifx\MakeRobust\@undefined \else
+    \MakeRobust\normalsize
+\fi
+
+%% ============================================================
+%% 圆圈数字
+%% ============================================================
+\newcommand{\textcriclednum}[1]{%
+\ennumber \ifcase#1 \or ① \or ② \or ③ \or ④ \or ⑤ \or ⑥ \or ⑦ \or ⑧ \or ⑨ \or ⑩ \or ⑪\or ⑫\or ⑬\or ⑭\or ⑮\or ⑯\or ⑰\or ⑱\or ⑲\or ⑳\else{Error}\fi}
+\newcommand{\circlenum}[1]{%
+\encircle\ifcase#1 \or ⑴\or ⑵\or ⑶\or ⑷\or ⑸\or ⑹\or ⑺\or ⑻\or ⑼\or ⑽\or ⑾\or ⑿\or ⒀\or ⒁\or ⒂\or ⒃\or ⒄\or ⒅\or ⒆\or ⒇\else{Error}\fi}
+
+\setdefaultenum{\circlenum{\arabic{enumi}}\hspace{-0.2em}}{\textcriclednum{\arabic{enumii}}\hspace{-0.3em}}{a.}{(a).}
+
+%% ============================================================
+%% 计数器
+%% ============================================================
+\newcounter{Rownumber}
+\newcommand{\Rown}{\stepcounter{Rownumber}\theRownumber}
+\newcommand{\reRown}{\setcounter{Rownumber}{0}}
+
+\newcounter{zhRownumber}
+\newcommand{\zhRown}{\stepcounter{zhRownumber}\zhnumber{\thezhRownumber}}
+\newcommand{\rezhRown}{\setcounter{zhRownumber}{0}}
+
+%% ============================================================
+%% longtable 环境
+%% ============================================================
+\let\oldlongtable\longtable
+\let\endoldlongtable\endlongtable
+\renewenvironment{longtable}[1][c]{
+  \oldlongtable[#1]
+}{
+  \endoldlongtable
+}
+\AtBeginEnvironment{longtable}{\fontsize{12bp}{18pt}\selectfont\fs\reRown\rezhRown}
+\newcommand{\longtablefont}{\fontsize{12bp}{18pt}\selectfont\song}
+\newcommand{\longtablesmall}{\fontsize{10bp}{15pt}\selectfont\song}
+\newcommand{\longtablelarge}{\fontsize{14bp}{21pt}\selectfont\song}
+
+%% ============================================================
+%% longtblr 环境
+%% ============================================================
+\AtBeginEnvironment{longtblr}{\fontsize{12bp}{18pt}\selectfont\song\reRown\rezhRown}
+\SetTblrInner[longtblr]{
+  cells={font=\song, halign=c, valign=m},
+  row{1}={font=\heiti, bg=white}
+}
+\DefTblrTemplate{contfoot-text}{default}{下一页继续}
+\DefTblrTemplate{conthead-text}{default}{（续表）}
+\SetTblrStyle{caption-tag}{font=\heiti\zihao{-4}}
+\SetTblrStyle{caption-text}{font=\song\zihao{-4}}
+
+\newcommand{\longtblrfont}{\fontsize{12bp}{18pt}\selectfont\song}
+\newcommand{\longtblrsmall}{\fontsize{10bp}{15pt}\selectfont\song}
+\newcommand{\longtblrlarge}{\fontsize{14bp}{21pt}\selectfont\song}
+
+%% ============================================================
+%% 表格模板命令
+%% ============================================================
+\newcommand{\celltitle}[1]{\multicolumn{1}{|c|}{\heiti #1}}
+\newcommand{\subtitle}[2]{\multicolumn{#2}{|l|}{\textit{\kai（\zhRown ）#1 }}\\\hline}
+\newcommand{\tablerow}[1]{\Rown & #1 \\\hline}
+\newcommand{\tabletitle}[2]{
+\\[-10pt]\hline
+\celltitle{\resizebox{1em}{0.85em}{序号}} &
+#1 \\\hline
+\endfirsthead
+\hline
+\celltitle{\resizebox{1em}{0.85em}{序号}} &
+#1 \\ \hline
+\endhead
+\hline
+\endfoot
+\hline
+\endlastfoot
+}
+
+%% ============================================================
+%% 代码配色
+%% ============================================================
+\definecolor{codebackground}{RGB}{248, 248, 248}
+\definecolor{codeborder}{RGB}{220, 220, 220}
+\definecolor{keywordcolor}{RGB}{0, 102, 204}
+\definecolor{stringcolor}{RGB}{221, 17, 68}
+\definecolor{commentcolor}{RGB}{113, 140, 0}
+\definecolor{numbercolor}{RGB}{102, 102, 102}
+\definecolor{linenumbercolor}{RGB}{153, 153, 153}
+
+\lstset{
+    basicstyle=\codefontstyle\fontsize{11bp}{16pt}\selectfont,
+    keywordstyle=\color{keywordcolor}\bfseries\codefontstyle,
+    stringstyle=\color{stringcolor}\codefontstyle,
+    commentstyle=\color{commentcolor}\codefontstyle,
+    numberstyle=\tiny\color{numbercolor},
+    numbers=left,
+    numbersep=10pt,
+    numberstyle=\scriptsize\color{linenumbercolor},
+    stepnumber=1,
+    frame=single,
+    frameround=tttt,
+    rulecolor=\color{codeborder},
+    backgroundcolor=\color{codebackground},
+    breaklines=true,
+    breakatwhitespace=false,
+    tabsize=4,
+    showtabs=false,
+    showspaces=false,
+    showstringspaces=false,
+    xleftmargin=20pt,
+    xrightmargin=10pt,
+    framexleftmargin=15pt,
+    framextopmargin=6pt,
+    framexbottommargin=6pt,
+    captionpos=b,
+    emphstyle=\color{red}\bfseries,
+    morekeywords={},
+    extendedchars=true,
+    columns=flexible,
+    keepspaces=true,
+    aboveskip=10pt,
+    belowskip=10pt,
+}
+
+\lstdefinestyle{python}{
+    language=Python,
+    morekeywords={self, True, False, None, as, with, yield, async, await},
+}
+\lstdefinestyle{cpp}{
+    language=C++,
+    morekeywords={nullptr, constexpr, decltype, override, final},
+}
+\lstdefinestyle{java}{
+    language=Java,
+    morekeywords={var, record},
+}
+\lstdefinelanguage{Rust}{
+    morekeywords={fn, let, mut, pub, use, mod, struct, enum, impl, trait, for, in, loop, while, if, else, match, return, async, await, move, ref, self, super, crate, where, type, as, dyn, const, static, unsafe, extern, true, false},
+    sensitive=true,
+    comment=[l]{//},
+    morecomment=[s]{/*}{*/},
+    morestring=[b]",
+}
+\lstdefinestyle{minimal}{
+    numbers=none,
+    frame=none,
+    xleftmargin=10pt,
+    framexleftmargin=0pt,
+    backgroundcolor=\color{white},
+}
+
+%% ============================================================
+%% 杂项命令
+%% ============================================================
+\newcommand{\xiaokai}[1]{{\kai\zihao{4}【#1】}}
+\newcommand{\conditionalHighlight}[1]{%
+  \ifnum#1>100
+    \textcolor{green}{\textbf{#1}}
+  \else
+    \textcolor{red}{\textbf{#1}}
+  \fi
+}
+
+%% ============================================================
+%% 摘要环境
+%% ============================================================
+\newenvironment{abstract}{%
+  \chapter*{\centering\heiti\enhei\zihao{-2}摘要}%
+  \addcontentsline{toc}{chapter}{摘要}%
+  \song%
+}{}
+
+%% ============================================================
+%% 空白偶数页无页码
+%% ============================================================
+\newcommand{\clearemptydoublepage}{%
+  \clearpage
+  \if@twoside
+    \ifodd\c@page
+    \else
+      \thispagestyle{empty}%
+      \hbox{}\newpage
+      \if@twocolumn\hbox{}\newpage\fi
+    \fi
+  \fi
+}
