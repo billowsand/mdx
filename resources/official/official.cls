@@ -23,6 +23,7 @@
 \RequirePackage{geometry}
 \RequirePackage{fancyhdr}
 \RequirePackage{array}
+\RequirePackage{graphicx}
 \RequirePackage{etoolbox}
 \RequirePackage{xcolor}
 

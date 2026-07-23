@@ -1,6 +1,7 @@
-//! 行内格式拆分：把一行原文切成 Inline 序列（Text / Bold / Italic）。
+//! 行内格式拆分：把一行原文切成 Inline 序列（Text / Bold / Italic / Code / Link / Footnote）。
 //!
-//! 仅识别 markdown 的 `**加粗**` 与 `*斜体*` 两种语法；其他符号原样进入 Text。
+//! 识别 markdown 的 `**加粗**`、`*斜体*`、`` `代码` ``、`[文本](链接)`、`![替代文本](图片路径)`
+//! 以及行内脚注 `[^id]:(注释内容)`（冒号、括号兼容全角）；其他符号原样进入 Text。
 //! 与 md_to_docx_rust::process_text_formatting 的拆分规则一致：
 //! - `**...**` 至少 4 字符长才视作粗体
 //! - `*...*` 至少 2 字符长才视作斜体（且不会被 `**` 误吞）
@@ -17,9 +18,18 @@ fn inline_matcher() -> &'static Regex {
     })
 }
 
+/// 链接与图片共用：`[text](url)` 或 `![alt](url)`（图片 alt 可为空）。
 fn link_matcher() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("invalid link regex"))
+    RE.get_or_init(|| Regex::new(r"!?\[([^\]]*)\]\(([^)]+)\)").expect("invalid link regex"))
+}
+
+/// 行内脚注：`[^id]:(内容)` 或 `[^id]：（内容）`，冒号与括号均兼容全角。
+fn footnote_matcher() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\[\^[^\]]+\][:：](?:\(([^)]*)\)|（([^）]*)）)").expect("invalid footnote regex")
+    })
 }
 
 /// 把一段已正规化引号的纯文本拆成 Inline 列表。
@@ -30,29 +40,59 @@ pub fn parse(text: &str) -> Vec<Inline> {
         return Vec::new();
     }
 
-    // 优先处理链接（链接不嵌套）
+    // 最优先处理行内脚注（脚注不嵌套）
+    let mut out = Vec::new();
+    let footnote_re = footnote_matcher();
+    let mut last_end = 0;
+
+    for m in footnote_re.find_iter(text) {
+        if m.start() > last_end {
+            out.extend(parse_with_links(&text[last_end..m.start()]));
+        }
+        let caps = footnote_re
+            .captures(m.as_str())
+            .expect("footnote match without captures");
+        let content = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|g| g.as_str())
+            .unwrap_or("");
+        out.push(Inline::Footnote(content.to_string()));
+        last_end = m.end();
+    }
+
+    if last_end < text.len() {
+        out.extend(parse_with_links(&text[last_end..]));
+    }
+
+    out
+}
+
+/// 处理不含脚注的文本（优先链接，其次加粗/斜体/代码）
+fn parse_with_links(text: &str) -> Vec<Inline> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    // 优先处理链接与图片（不嵌套）；以 `!` 开头的匹配为图片
     let mut out = Vec::new();
     let link_re = link_matcher();
     let mut last_end = 0;
 
-    for m in link_re.find_iter(text) {
+    for caps in link_re.captures_iter(text) {
+        let m = caps.get(0).expect("link match without whole group");
         if m.start() > last_end {
             // 处理链接之前的部分
             let before = &text[last_end..m.start()];
             let inlines = parse_no_links(before);
             out.extend(inlines);
         }
-        // 处理链接
-        let link_text = &text[m.start() + 1..m.end() - 1];
-        if let Some(sep) = link_text.find("](") {
-            let text_part = &link_text[..sep];
-            let url_part = &link_text[sep + 2..];
-            out.push(Inline::Link {
-                text: text_part.to_string(),
-                url: url_part.to_string(),
-            });
+        let label = caps[1].to_string();
+        let url = caps[2].to_string();
+        if m.as_str().starts_with('!') {
+            out.push(Inline::Image { alt: label, url });
         } else {
-            out.push(Inline::Text(m.as_str().to_string()));
+            out.push(Inline::Link { text: label, url });
         }
         last_end = m.end();
     }
@@ -112,7 +152,103 @@ pub fn flatten(inlines: &[Inline]) -> String {
                 s.push_str(t)
             }
             Inline::Link { text, .. } => s.push_str(text),
+            Inline::Image { alt, .. } => s.push_str(alt),
+            Inline::Footnote(t) => {
+                s.push('（');
+                s.push_str(t);
+                s.push('）');
+            }
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_inline_footnote_halfwidth() {
+        let inlines = parse("正文[^1]:(这是注释)继续");
+        assert_eq!(
+            inlines,
+            vec![
+                Inline::Text("正文".into()),
+                Inline::Footnote("这是注释".into()),
+                Inline::Text("继续".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_inline_footnote_fullwidth() {
+        let inlines = parse("正文[^2]：（全角注释）");
+        assert_eq!(
+            inlines,
+            vec![
+                Inline::Text("正文".into()),
+                Inline::Footnote("全角注释".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn footnote_coexists_with_bold_and_link() {
+        let inlines = parse("**重点**[^a]:(注) [页](https://x)");
+        assert_eq!(
+            inlines,
+            vec![
+                Inline::Bold("重点".into()),
+                Inline::Footnote("注".into()),
+                Inline::Text(" ".into()),
+                Inline::Link { text: "页".into(), url: "https://x".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_footnote_ref_without_definition_stays_text() {
+        // 没有 `:(内容)` 的 `[^1]` 不识别为脚注，原样保留
+        let inlines = parse("正文[^1]结束");
+        assert_eq!(inlines, vec![Inline::Text("正文[^1]结束".into())]);
+    }
+
+    #[test]
+    fn parses_image_with_alt() {
+        let inlines = parse("见下图：![系统架构](figs/arch.png)");
+        assert_eq!(
+            inlines,
+            vec![
+                Inline::Text("见下图：".into()),
+                Inline::Image {
+                    alt: "系统架构".into(),
+                    url: "figs/arch.png".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_image_with_empty_alt() {
+        let inlines = parse("![](a.png)");
+        assert_eq!(
+            inlines,
+            vec![Inline::Image {
+                alt: String::new(),
+                url: "a.png".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn plain_link_still_parses_as_link() {
+        let inlines = parse("[页](https://x)");
+        assert_eq!(
+            inlines,
+            vec![Inline::Link {
+                text: "页".into(),
+                url: "https://x".into(),
+            }]
+        );
+    }
 }

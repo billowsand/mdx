@@ -52,6 +52,13 @@ pub enum Inline {
         text: String,
         url: String,
     },
+    /// 图片。如 ![alt](path)。tex emitter 对独占一段的图片输出 figure 环境。
+    Image {
+        alt: String,
+        url: String,
+    },
+    /// 行内脚注。如 `[^1]:(注释内容)`，仅保存注释内容；编号由输出格式自行生成。
+    Footnote(String),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

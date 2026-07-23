@@ -31,6 +31,24 @@ cargo build --release
 
 `tex research` 不再调用 pandoc。若输出目录不存在有效 `references.bib`，生成的 `.tex` 会自动移除 `biblatex` 相关配置，避免编译时报 `references.bib` 缺失。
 
+## tex 输出布局（分章 + 图片）
+
+`tex` 子命令生成的是一个主 `.tex` 文件，正文按章拆分为子文件，主文件用 `\input{...}` 按序引用：
+
+```
+out/
+├── main.tex                  # 主文件：封面/摘要/前置内容 + \input 引用
+├── data/                     # 正文章节（research: chapterNN.tex；official: sectionNN.tex）
+│   ├── chapter01.tex
+│   └── chapter02.tex
+├── appendix/                 # 附录章节（仅 research，<!-- [附录] --> 之后）
+│   └── appendix01.tex
+└── figures/                  # markdown 引用的本地图片复制至此，引用路径自动改写
+```
+
+- research 按 `\chapter`（H1/H2）拆分；official 按 H2（"一、"级节）拆分。摘要、版本变更记录、参考文献等留在主文件。
+- 图片语法 `![替代文本](路径)`：独占一段时输出 `figure` 环境（`\includegraphics[width=\textwidth]`，替代文本作为 `\caption`）；行内混排时输出裸 `\includegraphics`。本地图片复制到 `figures/` 并把引用改写为 `figures/<文件名>`（同名不同源自动加序号后缀）；远程 URL 与找不到的文件保持原样并告警。docx 与表格单元格内暂不支持插图，降级为替代文本。
+
 TeX 输出完成后会自动检测 `tectonic`，没有则检测 `xelatex`。检测到可用引擎时会直接生成同名 `.pdf`，并清理同名 LaTeX 中间产物（如 `.aux`、`.log`、`.toc`、`.bcf`、`.run.xml` 等）。常规输出目录最终只需要保留 `.md`、`.tex`、`.cls` 和 `.pdf`；若项目使用参考文献，用户维护的 `references.bib` 不会被自动删除。
 
 ## 字体
@@ -52,9 +70,24 @@ TeX 输出完成后会自动检测 `tectonic`，没有则检测 `xelatex`。检�
 
 ## Markdown 支持范围
 
-当前 Markdown 解析为 Rust 内生实现，覆盖本项目常用子集：标题、段落、基础行内格式、普通链接、列表行、fenced code block、GFM 管道表格、pandoc 风格表格标题，以及 research 区段标记。
+扩展标记的完整使用约定见 [docs/markdown-extensions.md](docs/markdown-extensions.md)，撰写新文档时请遵循。
 
-尚未等价覆盖 pandoc 全量语法，例如图片、数学公式、脚注、blockquote、raw LaTeX/HTML、复杂嵌套列表、多段落列表、复杂表格和完整 inline 嵌套规则。
+当前 Markdown 解析为 Rust 内生实现，覆盖本项目常用子集：标题、段落、基础行内格式、普通链接、图片、行内脚注、列表行、fenced code block、GFM 管道表格、pandoc 风格表格标题，以及 research 区段标记。
+
+尚未等价覆盖 pandoc 全量语法，例如数学公式、引用式脚注（`[^id]` + 单独定义行）、blockquote、raw LaTeX/HTML、复杂嵌套列表、多段落列表、复杂表格和完整 inline 嵌套规则。
+
+## 行内脚注（`tex`）
+
+正文中写 `[^id]:(注释内容)`，冒号与括号均兼容全角（`：` / `（）`）：
+
+```markdown
+这是一段正文[^1]:(第一条注释)继续正文。
+```
+
+- `tex official` / `tex research`：转为 `\footnote{...}`，页脚自动编号，`id` 仅作占位、不参与编号。
+- 表格单元格内（`tabular` / `longtblr` 中 `\footnote` 不生效）降级为全角括号内联注释 `（注释内容）`。
+- `docx`：暂不生成 Word 脚注部件，同样降级为全角括号内联注释。
+- 只有 `[^id]` 而没有 `:(内容)` 时不识别为脚注，按普通文字原样输出。
 
 ## 区段标记（`research`）
 

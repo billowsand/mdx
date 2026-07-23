@@ -856,13 +856,17 @@ fn add_list_paragraph(docx: Docx, level: u8, prefix: &str, content: &[Inline]) -
 fn add_inlines(mut p: Paragraph, inlines: &[Inline]) -> Paragraph {
     for ip in inlines {
         let (text, bold, italic) = match ip {
-            Inline::Text(t) => (t.as_str(), false, false),
-            Inline::Bold(t) => (t.as_str(), true, false),
-            Inline::Italic(t) => (t.as_str(), false, true),
-            Inline::Code(t) => (t.as_str(), false, false),
-            Inline::Link { text, .. } => (text.as_str(), false, false),
+            Inline::Text(t) => (t.clone(), false, false),
+            Inline::Bold(t) => (t.clone(), true, false),
+            Inline::Italic(t) => (t.clone(), false, true),
+            Inline::Code(t) => (t.clone(), false, false),
+            Inline::Link { text, .. } => (text.clone(), false, false),
+            // docx 暂不支持插图，降级为替代文本
+            Inline::Image { alt, .. } => (alt.clone(), false, false),
+            // docx 暂不生成脚注部件，降级为全角括号内联注释
+            Inline::Footnote(t) => (format!("（{}）", t), false, false),
         };
-        let mut run = Run::new().add_text(text).size(SIZE_BODY);
+        let mut run = Run::new().add_text(&text).size(SIZE_BODY);
         // 斜体在中文里用楷体表达（与 LaTeX `ItalicFont={FZKai-Z03}` 一致）
         if italic {
             run = run.fonts(font_set(FONT_KAI)).italic();
@@ -906,6 +910,10 @@ fn add_table(docx: Docx, rows: &[Vec<String>]) -> Docx {
                     Inline::Italic(t) => (t.clone(), false, true),
                     Inline::Code(t) => (t.clone(), false, false),
                     Inline::Link { text, .. } => (text.clone(), false, false),
+                    // docx 暂不支持插图，降级为替代文本
+                    Inline::Image { alt, .. } => (alt.clone(), false, false),
+                    // docx 暂不生成脚注部件，降级为全角括号内联注释
+                    Inline::Footnote(t) => (format!("（{}）", t), false, false),
                 };
                 let mut run = Run::new().add_text(&text).size(SIZE_BODY);
                 if is_header {

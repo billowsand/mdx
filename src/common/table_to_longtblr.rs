@@ -279,6 +279,14 @@ fn cell_to_latex(cell: &str) -> String {
                 result.push('}');
             }
             Inline::Link { text, .. } => result.push_str(&escape_latex(&text)),
+            // longtblr 单元格内不插图，降级为替代文本
+            Inline::Image { alt, .. } => result.push_str(&escape_latex(&alt)),
+            // longtblr 单元格内 \footnote 不生效，降级为全角括号内联注释
+            Inline::Footnote(t) => {
+                result.push_str("（");
+                result.push_str(&escape_latex(&t));
+                result.push_str("）");
+            }
         }
     }
     result

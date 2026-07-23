@@ -60,7 +60,18 @@ impl Merger {
         let doc_title = cover.title.clone().or(doc_title);
 
         println!("正在解析 markdown...");
-        let blocks = parser::parse(&markdown_content);
+        let mut blocks = parser::parse(&markdown_content);
+
+        // 图片：复制到输出目录 figures/ 并改写引用路径
+        let out_dir = output_tex.parent().unwrap_or(Path::new("."));
+        let base_dir = if is_dir {
+            input
+        } else {
+            input.parent().unwrap_or(Path::new("."))
+        };
+        for (_, dst) in crate::common::images::relocate(&mut blocks, base_dir, out_dir) {
+            println!("  图片已复制到 {}", dst.display());
+        }
 
         // 3. 使用 Rust emitter 生成 LaTeX
         println!("正在生成 LaTeX...");
@@ -70,7 +81,7 @@ impl Merger {
         // 如果有摘要，完成摘要收集
         emitter.finish_abstract();
 
-        let body = emitter.into_body();
+        let (body, parts) = emitter.finish();
 
         // 4. 包装成完整文档
         let template = if let Some(path) = user_template {
@@ -81,9 +92,11 @@ impl Merger {
         let mut tex = render_template(&template, &body, doc_title.as_deref(), &cover);
         tex = fix_biblatex(&tex, output_tex);
 
-        // 5. 写入输出文件
+        // 5. 写入输出文件（主文件 + data/ 与 appendix/ 分章部件）
         fs::write(output_tex, &tex)
             .with_context(|| format!("写入 {} 失败", output_tex.display()))?;
+        crate::common::parts::write_parts(out_dir, &parts)
+            .with_context(|| format!("写入分章部件到 {} 失败", out_dir.display()))?;
 
         crate::tex_compile::compile_pdf_if_available(output_tex)?;
 
@@ -482,7 +495,8 @@ mod tests {
         let blocks = parser::parse(&merged);
         let mut emitter = TexResearchEmitter::new();
         emitter.emit_all(&blocks);
-        let body = emitter.into_body();
+        let (main, parts) = emitter.finish();
+        let body = main + &parts.into_iter().map(|(_, c)| c).collect::<String>();
 
         assert!(body.contains("\\chapter{感知类研制任务}"), "{body}");
         assert!(!body.contains("\\#\\# 第三章"), "{body}");

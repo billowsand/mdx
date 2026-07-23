@@ -10,9 +10,11 @@
 
 pub mod ast;
 pub mod heading;
+pub mod images;
 pub mod inline;
 pub mod markers;
 pub mod numbering;
+pub mod parts;
 pub mod quotes;
 pub mod table;
 pub mod table_to_longtblr;

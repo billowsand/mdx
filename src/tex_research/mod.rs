@@ -7,6 +7,7 @@
 //! - 引号正规化为中文双引号（parser 层面处理）
 //! - 内嵌 md2tex.cls
 //! - 使用 TexResearchEmitter 生成 LaTeX
+//! - 分章输出：正文各章写入 data/，附录写入 appendix/，图片复制到 figures/
 
 mod merger;
 mod resources;

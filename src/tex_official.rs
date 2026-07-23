@@ -29,7 +29,11 @@ const CIRCLE_NUMBERS_2: &[&str] = &[
 ];
 
 /// 公文 tex 入口。
+///
+/// 输出布局：主 tex 文件 + `data/` 下的分节部件（主文件 `\input` 引用）+
+/// `figures/` 下的图片（markdown 引用的本地图片复制至此并改写路径）。
 pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
+    let kind = crate::input::classify(input)?;
     let content = crate::input::collect(input)?;
     let output_path = output
         .map(Path::to_path_buf)
@@ -37,16 +41,28 @@ pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
 
     println!("正在转换: {}", input.display());
 
-    let blocks = parser::parse(&content);
+    let out_dir = output_path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(out_dir).with_context(|| format!("创建输出目录 {} 失败", out_dir.display()))?;
+    let base_dir = match kind {
+        crate::input::InputKind::Directory => input,
+        crate::input::InputKind::File => input.parent().unwrap_or(Path::new(".")),
+    };
+
+    let mut blocks = parser::parse(&content);
+    for (_, dst) in crate::common::images::relocate(&mut blocks, base_dir, out_dir) {
+        println!("  图片已复制到 {}", dst.display());
+    }
+
     let mut emitter = TexEmitter::new();
     emitter.emit_all(&blocks);
 
-    let body = emitter.into_body();
+    let (body, parts) = emitter.finish();
     let tex = wrap_document(&body);
 
     fs::write(&output_path, tex).with_context(|| format!("写入 {} 失败", output_path.display()))?;
+    crate::common::parts::write_parts(out_dir, &parts)
+        .with_context(|| format!("写入分章部件到 {} 失败", out_dir.display()))?;
 
-    let out_dir = output_path.parent().unwrap_or(Path::new("."));
     let cls_dst = out_dir.join("official.cls");
     fs::write(&cls_dst, OFFICIAL_CLS)
         .with_context(|| format!("复制 official.cls 到 {} 失败", cls_dst.display()))?;
@@ -73,7 +89,16 @@ fn wrap_document(body: &str) -> String {
 // ========== Emitter ==========
 
 struct TexEmitter {
+    /// 当前写入缓冲区（主文件段或当前部件段）
     out: String,
+    /// 已定稿的主文件内容（含 \input 引用行）
+    main: String,
+    /// 已定稿的部件：(相对路径, 内容)
+    parts: Vec<(String, String)>,
+    /// 当前正在写入的部件路径；None 表示当前写入主文件
+    current_part: Option<String>,
+    /// data/sectionNN 序号
+    data_idx: usize,
     h2: usize,
     h3: usize,
     h4: usize,
@@ -92,6 +117,10 @@ impl TexEmitter {
     fn new() -> Self {
         Self {
             out: String::new(),
+            main: String::new(),
+            parts: Vec::new(),
+            current_part: None,
+            data_idx: 0,
             h2: 0,
             h3: 0,
             h4: 0,
@@ -107,8 +136,28 @@ impl TexEmitter {
         }
     }
 
-    fn into_body(self) -> String {
-        self.out
+    /// 收尾：把当前缓冲区定稿，返回 (主文件 body, 部件列表)。
+    fn finish(mut self) -> (String, Vec<(String, String)>) {
+        self.finalize_current();
+        (self.main, self.parts)
+    }
+
+    /// 当前缓冲区定稿：归入当前部件或主文件。
+    fn finalize_current(&mut self) {
+        let buf = std::mem::take(&mut self.out);
+        match self.current_part.take() {
+            Some(path) => self.parts.push((path, buf)),
+            None => self.main.push_str(&buf),
+        }
+    }
+
+    /// 切出一个新部件；主文件中按序留下 \input 引用。
+    fn start_data_part(&mut self) {
+        self.finalize_current();
+        self.data_idx += 1;
+        let path = format!("data/section{:02}.tex", self.data_idx);
+        self.main.push_str(&format!("\\input{{{}}}\n\n", path));
+        self.current_part = Some(path);
     }
 
     fn emit_all(&mut self, blocks: &[Block]) {
@@ -168,6 +217,8 @@ impl TexEmitter {
                 self.h3 = 0;
                 self.h4 = 0;
                 self.h5 = 0;
+                // H2（"一、"级）是公文的顶级节，每节切出 data/ 部件
+                self.start_data_part();
                 let num = number_to_chinese(self.h2);
                 self.out
                     .push_str(&format!("{{\\hei {}、{}}}\\par\n\n", num, escaped));
@@ -198,12 +249,30 @@ impl TexEmitter {
     }
 
     fn emit_paragraph(&mut self, inlines: &[Inline]) {
+        // 独占一段的图片（允许前后有空白文本）输出为 figure 环境
+        if let Some((alt, url)) = sole_image(inlines) {
+            self.emit_figure(alt, url);
+            return;
+        }
         let body = render_inlines(inlines);
         if body.trim().is_empty() {
             return;
         }
         self.out.push_str(&body);
         self.out.push_str("\\par\n\n");
+    }
+
+    fn emit_figure(&mut self, alt: &str, url: &str) {
+        self.out.push_str("\\begin{figure}[htbp]\n\\centering\n");
+        self.out.push_str(&format!(
+            "\\includegraphics[width=\\textwidth]{{{}}}\n",
+            escape_href_url(url)
+        ));
+        if !alt.is_empty() {
+            self.out
+                .push_str(&format!("\\caption{{{}}}\n", escape_latex(alt)));
+        }
+        self.out.push_str("\\end{figure}\n\n");
     }
 
     fn emit_list_item(&mut self, level: u8, content: &[Inline]) {
@@ -237,7 +306,15 @@ impl TexEmitter {
             let cells: Vec<String> = (0..max_cols)
                 .map(|i| {
                     let raw = row.get(i).map(String::as_str).unwrap_or("");
-                    let body = render_inlines(&crate::common::inline::parse(raw));
+                    // tabular 内 \footnote 的注释文字不会输出，降级为全角括号内联注释
+                    let inlines: Vec<Inline> = crate::common::inline::parse(raw)
+                        .into_iter()
+                        .map(|ip| match ip {
+                            Inline::Footnote(t) => Inline::Text(format!("（{}）", t)),
+                            other => other,
+                        })
+                        .collect();
+                    let body = render_inlines(&inlines);
                     if row_idx == 0 {
                         format!("\\textbf{{{}}}", body)
                     } else {
@@ -350,6 +427,18 @@ impl TexEmitter {
 
 // ========== 字符串工具 ==========
 
+/// 段落内容去掉纯空白 Text 后只剩一张图片时，返回其 (alt, url)。
+fn sole_image(inlines: &[Inline]) -> Option<(&str, &str)> {
+    let meaningful: Vec<&Inline> = inlines
+        .iter()
+        .filter(|ip| !matches!(ip, Inline::Text(t) if t.trim().is_empty()))
+        .collect();
+    match meaningful.as_slice() {
+        [Inline::Image { alt, url }] => Some((alt, url)),
+        _ => None,
+    }
+}
+
 fn render_inlines(inlines: &[Inline]) -> String {
     let mut s = String::new();
     for ip in inlines {
@@ -375,6 +464,17 @@ fn render_inlines(inlines: &[Inline]) -> String {
                 s.push_str(&escape_href_url(url));
                 s.push_str("}{");
                 s.push_str(&escape_latex(text));
+                s.push('}');
+            }
+            // 行内图片（未独占一段）：直接插入 \includegraphics，宽度默认 \textwidth
+            Inline::Image { url, .. } => {
+                s.push_str("\\includegraphics[width=\\textwidth]{");
+                s.push_str(&escape_href_url(url));
+                s.push('}');
+            }
+            Inline::Footnote(t) => {
+                s.push_str("\\footnote{");
+                s.push_str(&escape_latex(t));
                 s.push('}');
             }
         }
@@ -424,6 +524,16 @@ mod tests {
     use super::*;
     use crate::common::ast::{Block, Inline};
 
+    /// 测试辅助：主文件与全部部件按序拼接，便于对整体内容做断言
+    fn test_body(e: TexEmitter) -> String {
+        let (main, parts) = e.finish();
+        let mut s = main;
+        for (_, content) in parts {
+            s.push_str(&content);
+        }
+        s
+    }
+
     #[test]
     fn escapes_special_chars() {
         assert_eq!(
@@ -457,7 +567,7 @@ mod tests {
             level: 2,
             text: "方法".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("一、引言"), "got {}", body);
         assert!(body.contains("二、方法"), "got {}", body);
     }
@@ -480,7 +590,7 @@ mod tests {
             level: 2,
             content: vec![Inline::Text("c".into())],
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains('①') && body.contains('②') && body.contains('⑴'));
     }
 
@@ -494,7 +604,7 @@ mod tests {
             ],
             caption: None,
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{tabular}{|l|l|}"));
         assert!(body.contains("\\textbf{列A}"));
         assert!(body.contains("\\hline"));
@@ -510,9 +620,84 @@ mod tests {
             ],
             caption: None,
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\textbf{重点}"));
         assert!(body.contains("\\textit{斜体}"));
         assert!(!body.contains("**重点**"));
+    }
+
+    #[test]
+    fn standalone_image_emits_figure_with_textwidth() {
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Paragraph(vec![Inline::Image {
+            alt: "系统架构".into(),
+            url: "figs/arch.png".into(),
+        }]));
+        let body = test_body(e);
+        assert!(body.contains("\\begin{figure}[htbp]"), "got {}", body);
+        assert!(body.contains("\\centering"));
+        assert!(
+            body.contains("\\includegraphics[width=\\textwidth]{figs/arch.png}"),
+            "got {}",
+            body
+        );
+        assert!(body.contains("\\caption{系统架构}"));
+        assert!(body.contains("\\end{figure}"));
+    }
+
+    #[test]
+    fn image_without_alt_omits_caption() {
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Paragraph(vec![Inline::Image {
+            alt: String::new(),
+            url: "a.png".into(),
+        }]));
+        let body = test_body(e);
+        assert!(body.contains("\\includegraphics[width=\\textwidth]{a.png}"));
+        assert!(!body.contains("\\caption"));
+    }
+
+    #[test]
+    fn inline_image_stays_inline() {
+        let rendered = render_inlines(&[
+            Inline::Text("见".into()),
+            Inline::Image {
+                alt: "图".into(),
+                url: "a.png".into(),
+            },
+        ]);
+        assert_eq!(rendered, "见\\includegraphics[width=\\textwidth]{a.png}");
+    }
+
+    #[test]
+    fn h2_sections_split_into_data_parts() {
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "标题".into(),
+        });
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "引言".into(),
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("引言正文".into())]));
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "方法".into(),
+        });
+        let (main, parts) = e.finish();
+
+        // 主文件：标题保留，两节按序 \input 引用
+        assert!(main.contains("标题"), "got {main}");
+        assert!(main.contains("\\input{data/section01.tex}"));
+        assert!(main.contains("\\input{data/section02.tex}"));
+        assert!(!main.contains("一、引言"), "got {main}");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].0, "data/section01.tex");
+        assert!(parts[0].1.contains("一、引言"));
+        assert!(parts[0].1.contains("引言正文"));
+        assert_eq!(parts[1].0, "data/section02.tex");
+        assert!(parts[1].1.contains("二、方法"));
     }
 }

@@ -6,6 +6,7 @@
 //! - 列表前缀：1. 2. 3. / (1) (2) / a. b. / I. II. / (A) (B) / 1) 2)
 //! - 表格：使用 longtblr 环境
 //! - 支持特殊章节标记：Abstract / Appendix / Changelog / Body
+//! - 分章输出：每章切为 data/ 部件，附录切为 appendix/ 部件，主文件 \input 引用
 
 use crate::common::ast::{Block, Inline, MarkerKind};
 use crate::common::table_to_longtblr::emit_longtblr;
@@ -21,8 +22,24 @@ enum SectionMode {
 }
 
 /// 研究报告 tex emitter
+///
+/// 分章输出：普通模式下每个 \chapter（H1/H2）切出一个 `data/chapterNN.tex`
+/// 部件，附录模式下每个 \chapter 切出 `appendix/appendixNN.tex` 部件；
+/// 摘要、版本变更记录、参考文献等前置/后置内容留在主文件，主文件按出现
+/// 顺序用 `\input{...}` 引用各部件。`finish()` 返回 (主文件 body, 部件列表)。
 pub struct TexResearchEmitter {
+    /// 当前写入缓冲区（主文件段或当前部件段）
     out: String,
+    /// 已定稿的主文件内容（含 \input 引用行）
+    main: String,
+    /// 已定稿的部件：(相对路径, 内容)
+    parts: Vec<(String, String)>,
+    /// 当前正在写入的部件路径；None 表示当前写入主文件
+    current_part: Option<String>,
+    /// data/chapterNN 序号
+    data_idx: usize,
+    /// appendix/appendixNN 序号
+    appendix_file_idx: usize,
     /// 摘要收集（摘要模式下收集的内容）
     abstract_content: Vec<String>,
     /// 当前是否在摘要模式
@@ -62,6 +79,11 @@ impl TexResearchEmitter {
     pub fn new() -> Self {
         Self {
             out: String::new(),
+            main: String::new(),
+            parts: Vec::new(),
+            current_part: None,
+            data_idx: 0,
+            appendix_file_idx: 0,
             abstract_content: Vec::new(),
             in_abstract: false,
             mode: SectionMode::Normal,
@@ -85,8 +107,43 @@ impl TexResearchEmitter {
         }
     }
 
-    pub fn into_body(self) -> String {
-        self.out
+    /// 收尾：把当前缓冲区定稿，返回 (主文件 body, 部件列表)。
+    pub fn finish(mut self) -> (String, Vec<(String, String)>) {
+        self.finalize_current();
+        (self.main, self.parts)
+    }
+
+    /// 当前缓冲区定稿：归入当前部件或主文件。
+    fn finalize_current(&mut self) {
+        let buf = std::mem::take(&mut self.out);
+        match self.current_part.take() {
+            Some(path) => self.parts.push((path, buf)),
+            None => self.main.push_str(&buf),
+        }
+    }
+
+    /// 切回主文件（区段标记等内容始终落在主文件）。
+    fn start_main(&mut self) {
+        if self.current_part.is_some() {
+            self.finalize_current();
+        }
+    }
+
+    /// 切出一个新部件；主文件中按序留下 \input 引用。
+    fn start_part(&mut self, path: String) {
+        self.finalize_current();
+        self.main.push_str(&format!("\\input{{{}}}\n\n", path));
+        self.current_part = Some(path);
+    }
+
+    fn start_data_part(&mut self) {
+        self.data_idx += 1;
+        self.start_part(format!("data/chapter{:02}.tex", self.data_idx));
+    }
+
+    fn start_appendix_part(&mut self) {
+        self.appendix_file_idx += 1;
+        self.start_part(format!("appendix/appendix{:02}.tex", self.appendix_file_idx));
     }
 
     pub fn emit_all(&mut self, blocks: &[Block]) {
@@ -129,6 +186,8 @@ impl TexResearchEmitter {
     }
 
     fn handle_marker(&mut self, kind: &MarkerKind) {
+        // 区段标记产生的内容（\appendix、摘要、参考文献等）始终落在主文件
+        self.start_main();
         match kind {
             MarkerKind::Abstract => {
                 self.mode = SectionMode::Abstract;
@@ -235,6 +294,7 @@ impl TexResearchEmitter {
             match (level, shifted) {
                 (1, _) | (2, false) => {
                     self.appendix_idx += 1;
+                    self.start_appendix_part();
                     self.out
                         .push_str(&format!("\\chapter{{{}}}\\par\n\n", escaped));
                 }
@@ -255,11 +315,12 @@ impl TexResearchEmitter {
         }
 
         match level {
-            // level 1/2 → \chapter
+            // level 1/2 → \chapter，每章切出 data/ 部件
             1 | 2 => {
                 self.chapter_num += 1;
                 self.section_num = 0;
                 self.subsection_num = 0;
+                self.start_data_part();
                 self.out
                     .push_str(&format!("\\chapter{{{}}}\\par\n\n", escaped));
             }
@@ -287,6 +348,11 @@ impl TexResearchEmitter {
     }
 
     fn emit_paragraph(&mut self, inlines: &[Inline]) {
+        // 独占一段的图片（允许前后有空白文本）输出为 figure 环境
+        if let Some((alt, url)) = sole_image(inlines) {
+            self.emit_figure(alt, url);
+            return;
+        }
         let body = render_inlines(inlines);
         if body.trim().is_empty() {
             return;
@@ -304,6 +370,25 @@ impl TexResearchEmitter {
 
 ",
         );
+    }
+
+    fn emit_figure(&mut self, alt: &str, url: &str) {
+        let mut fig = String::from("\\begin{figure}[htbp]\n\\centering\n");
+        fig.push_str(&format!(
+            "\\includegraphics[width=\\textwidth]{{{}}}\n",
+            escape_href_url(url)
+        ));
+        if !alt.is_empty() {
+            fig.push_str(&format!("\\caption{{{}}}\n", escape_latex(alt)));
+        }
+        fig.push_str("\\end{figure}");
+
+        if self.in_abstract {
+            self.abstract_content.push(fig);
+            return;
+        }
+        self.out.push_str(&fig);
+        self.out.push_str("\n\n");
     }
 
     fn emit_table(&mut self, rows: &[Vec<String>], caption: Option<&str>) {
@@ -492,6 +577,18 @@ impl Default for TexResearchEmitter {
 
 // ========== 字符串工具 ==========
 
+/// 段落内容去掉纯空白 Text 后只剩一张图片时，返回其 (alt, url)。
+fn sole_image(inlines: &[Inline]) -> Option<(&str, &str)> {
+    let meaningful: Vec<&Inline> = inlines
+        .iter()
+        .filter(|ip| !matches!(ip, Inline::Text(t) if t.trim().is_empty()))
+        .collect();
+    match meaningful.as_slice() {
+        [Inline::Image { alt, url }] => Some((alt, url)),
+        _ => None,
+    }
+}
+
 fn render_inlines(inlines: &[Inline]) -> String {
     let mut s = String::new();
     for ip in inlines {
@@ -517,6 +614,17 @@ fn render_inlines(inlines: &[Inline]) -> String {
                 s.push_str(&escape_href_url(url));
                 s.push_str("}{");
                 s.push_str(&escape_latex(text));
+                s.push('}');
+            }
+            // 行内图片（未独占一段）：直接插入 \includegraphics，宽度默认 \textwidth
+            Inline::Image { url, .. } => {
+                s.push_str("\\includegraphics[width=\\textwidth]{");
+                s.push_str(&escape_href_url(url));
+                s.push('}');
+            }
+            Inline::Footnote(t) => {
+                s.push_str("\\footnote{");
+                s.push_str(&escape_latex(t));
                 s.push('}');
             }
         }
@@ -615,6 +723,16 @@ mod tests {
     use super::*;
     use crate::common::ast::MarkerKind;
 
+    /// 测试辅助：主文件与全部部件按序拼接，便于对整体内容做断言
+    fn test_body(e: TexResearchEmitter) -> String {
+        let (main, parts) = e.finish();
+        let mut s = main;
+        for (_, content) in parts {
+            s.push_str(&content);
+        }
+        s
+    }
+
     #[test]
     fn test_chapter_heading() {
         let mut e = TexResearchEmitter::new();
@@ -622,7 +740,7 @@ mod tests {
             level: 1,
             text: "引言".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\chapter{引言}"));
     }
 
@@ -633,7 +751,7 @@ mod tests {
             level: 3,
             text: "背景".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\section{背景}"));
     }
 
@@ -643,7 +761,7 @@ mod tests {
         e.emit_block(&Block::Marker(MarkerKind::Abstract));
         e.emit_block(&Block::Paragraph(vec![Inline::Text("这是摘要内容".into())]));
         e.finish_abstract();
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{abstract}"));
         assert!(body.contains("\\end{abstract}"));
     }
@@ -666,7 +784,7 @@ mod tests {
             level: 2,
             content: vec![Inline::Text("子项".into())],
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("1. "));
         assert!(body.contains("2. "));
         assert!(body.contains("(1) "));
@@ -688,7 +806,7 @@ mod tests {
             level: 1,
             text: "主要符号表".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\appendix"));
         assert!(body.contains("\\chapter{主要符号表}"));
     }
@@ -710,7 +828,7 @@ mod tests {
             level: 3,
             text: "第1簇 态势发现".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\chapter{关键算法模型清单}"));
         assert!(body.contains("\\section{能力簇总览}"));
         assert!(body.contains("\\subsection{第1簇 态势发现}"));
@@ -728,7 +846,7 @@ mod tests {
         e.emit_block(&Block::Paragraph(vec![Inline::Text(
             "v1.0 初始版本".into(),
         )]));
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\chapter*{版本变更记录}"));
         assert!(body.contains("v1.0 初始版本"));
     }
@@ -748,7 +866,7 @@ mod tests {
             level: 1,
             text: "新的第一章".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         // 应该包含两个章节
         assert!(body.contains("\\chapter{第一章}"));
         assert!(body.contains("\\chapter{新的第一章}"));
@@ -761,7 +879,7 @@ mod tests {
         e.emit_block(&Block::Paragraph(vec![Inline::Text("第一段".into())]));
         e.emit_block(&Block::Paragraph(vec![Inline::Text("第二段".into())]));
         e.finish_abstract();
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{abstract}"));
         assert!(body.contains("第一段"));
         assert!(body.contains("第二段"));
@@ -778,7 +896,7 @@ mod tests {
             ],
             caption: None,
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{longtblr}"));
         assert!(body.contains("\\end{longtblr}"));
     }
@@ -793,7 +911,7 @@ mod tests {
             ],
             caption: None,
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\textbf{重点}"));
         assert!(body.contains("\\textit{斜体}"));
         // 行内标记不应作为字面量出现
@@ -810,7 +928,7 @@ mod tests {
             ],
             caption: Some("测试表格".into()),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{longtblr}[caption={测试表格}]"));
     }
 
@@ -821,7 +939,7 @@ mod tests {
             level: 4,
             text: "子小节".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\subsection{子小节}"));
     }
 
@@ -832,7 +950,7 @@ mod tests {
             level: 5,
             text: "四级标题".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\subsubsection{四级标题}"));
     }
 
@@ -843,7 +961,7 @@ mod tests {
             level: 2,
             text: "引言".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\chapter{引言}"));
     }
 
@@ -854,7 +972,7 @@ mod tests {
             lang: Some("rust".into()),
             content: "fn main() {}".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{lstlisting}[language=Rust]"));
         assert!(body.contains("fn main()"));
         assert!(body.contains("\\end{lstlisting}"));
@@ -867,7 +985,7 @@ mod tests {
             lang: Some("rust,caption={x}".into()),
             content: "fn main() {}".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\begin{lstlisting}\n"));
         assert!(!body.contains("caption"));
     }
@@ -882,6 +1000,58 @@ mod tests {
     }
 
     #[test]
+    fn test_footnote_renders_latex_footnote() {
+        let rendered = render_inlines(&[
+            Inline::Text("正文".into()),
+            Inline::Footnote("注释 100% 属实".into()),
+        ]);
+        assert_eq!(rendered, "正文\\footnote{注释 100\\% 属实}");
+    }
+
+    #[test]
+    fn test_standalone_image_emits_figure_with_textwidth() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Paragraph(vec![Inline::Image {
+            alt: "总体框架".into(),
+            url: "figs/framework.png".into(),
+        }]));
+        let body = test_body(e);
+        assert!(body.contains("\\begin{figure}[htbp]"), "got {}", body);
+        assert!(body.contains("\\centering"));
+        assert!(
+            body.contains("\\includegraphics[width=\\textwidth]{figs/framework.png}"),
+            "got {}",
+            body
+        );
+        assert!(body.contains("\\caption{总体框架}"));
+        assert!(body.contains("\\end{figure}"));
+    }
+
+    #[test]
+    fn test_image_without_alt_omits_caption() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Paragraph(vec![Inline::Image {
+            alt: String::new(),
+            url: "a.png".into(),
+        }]));
+        let body = test_body(e);
+        assert!(body.contains("\\includegraphics[width=\\textwidth]{a.png}"));
+        assert!(!body.contains("\\caption"));
+    }
+
+    #[test]
+    fn test_inline_image_stays_inline() {
+        let rendered = render_inlines(&[
+            Inline::Text("见".into()),
+            Inline::Image {
+                alt: "图".into(),
+                url: "a.png".into(),
+            },
+        ]);
+        assert_eq!(rendered, "见\\includegraphics[width=\\textwidth]{a.png}");
+    }
+
+    #[test]
     fn test_appendix_emitted_after_normal_chapter() {
         let mut e = TexResearchEmitter::new();
         e.emit_block(&Block::Heading {
@@ -893,8 +1063,94 @@ mod tests {
             level: 1,
             text: "附录".into(),
         });
-        let body = e.into_body();
+        let body = test_body(e);
         assert!(body.contains("\\appendix"));
         assert!(body.contains("\\chapter{附录}"));
+    }
+
+    #[test]
+    fn test_chapters_split_into_data_parts() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("前言".into())]));
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "第一章".into(),
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("第一章正文".into())]));
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "第二章".into(),
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("第二章正文".into())]));
+        let (main, parts) = e.finish();
+
+        // 主文件：前言保留，两章按序 \input 引用
+        assert!(main.contains("前言"), "got {main}");
+        assert!(!main.contains("\\chapter"), "got {main}");
+        let first = main.find("\\input{data/chapter01.tex}").expect("input 1");
+        let second = main.find("\\input{data/chapter02.tex}").expect("input 2");
+        assert!(first < second);
+
+        // 部件：各章内容各自成文
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].0, "data/chapter01.tex");
+        assert!(parts[0].1.contains("\\chapter{第一章}"));
+        assert!(parts[0].1.contains("第一章正文"));
+        assert_eq!(parts[1].0, "data/chapter02.tex");
+        assert!(parts[1].1.contains("\\chapter{第二章}"));
+    }
+
+    #[test]
+    fn test_appendix_split_into_appendix_parts() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "正文".into(),
+        });
+        e.emit_block(&Block::Marker(MarkerKind::Appendix));
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "附录A 清单".into(),
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("附录内容".into())]));
+        let (main, parts) = e.finish();
+
+        // \appendix 必须留在主文件且位于附录部件的 \input 之前
+        let appendix_pos = main.find("\\appendix").expect("appendix");
+        let input_pos = main
+            .find("\\input{appendix/appendix01.tex}")
+            .expect("appendix input");
+        assert!(appendix_pos < input_pos, "got {main}");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1].0, "appendix/appendix01.tex");
+        assert!(parts[1].1.contains("\\chapter{附录A 清单}"));
+        assert!(parts[1].1.contains("附录内容"));
+    }
+
+    #[test]
+    fn test_changelog_and_reference_stay_in_main() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "正文".into(),
+        });
+        e.emit_block(&Block::Marker(MarkerKind::Changelog));
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "版本变更记录".into(),
+        });
+        e.emit_block(&Block::Marker(MarkerKind::Reference));
+        e.emit_block(&Block::List {
+            ordered: true,
+            level: 1,
+            content: vec![Inline::Text("文献一".into())],
+        });
+        let (main, parts) = e.finish();
+
+        assert_eq!(parts.len(), 1, "只有正文一章: {parts:?}");
+        assert!(main.contains("\\chapter*{版本变更记录}"));
+        assert!(main.contains("参考文献"));
+        assert!(main.contains("文献一"));
     }
 }
