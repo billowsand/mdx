@@ -26,6 +26,24 @@
 \RequirePackage{graphicx}
 \RequirePackage{etoolbox}
 \RequirePackage{xcolor}
+\RequirePackage{enumitem}
+\RequirePackage{paralist}
+\RequirePackage{hyperref}
+
+%% ============================================================
+%% 圆圈数字（与 md2tex.cls 一致）
+%% 用 \textcircled{n} 渲染，避免依赖特定 Unicode 字体是否带圈数字字形
+%% ============================================================
+\newcommand{\textcriclednum}[1]{%
+\textcircled{\ifcase#1 1\or 2\or 3\or 4\or 5\or 6\or 7\or 8\or 9\or 10%
+\or 11\or 12\or 13\or 14\or 15\or 16\or 17\or 18\or 19\or 20\fi}}
+\newcommand{\circlenum}[1]{\textcircled{\ifcase#1 1\or 2\or 3\or 4\or 5\or 6\or 7\or 8\or 9\or 10%
+\or 11\or 12\or 13\or 14\or 15\or 16\or 17\or 18\or 19\or 20\fi}}
+
+%% mdx 列表：L1 → asparaenum（首行缩进段落式），L2..6 → inparaenum（行内紧排）
+\setdefaultenum{\circlenum{\arabic{enumi}}\hspace{-0.2em}}{\textcriclednum{\arabic{enumii}}\hspace{-0.3em}}{(\Alph{enumiii})}{(\alph{enumiv})}
+\setenumerate[5]{label=\Roman*.}
+\setenumerate[6]{label=\roman*.}
 
 %% 关闭自动节编号
 \setcounter{secnumdepth}{-2}

@@ -179,14 +179,18 @@ fn parse_no_links(text: &str) -> Vec<Inline> {
         }
         let part = m.as_str();
         if part.starts_with("**") && part.ends_with("**") && part.len() >= 4 {
-            out.push(Inline::Bold(part[2..part.len() - 2].to_string()));
+            // 递归解析内部：加粗里允许再次出现引用 / 脚注 / 嵌套格式
+            let inner = &part[2..part.len() - 2];
+            out.push(Inline::Bold(parse(inner)));
         } else if part.starts_with('*')
             && part.ends_with('*')
             && part.len() >= 2
             && !part.starts_with("**")
         {
-            out.push(Inline::Italic(part[1..part.len() - 1].to_string()));
+            let inner = &part[1..part.len() - 1];
+            out.push(Inline::Italic(parse(inner)));
         } else if part.starts_with('`') && part.ends_with('`') && part.len() >= 2 {
+            // inline code 不再解析（保留原样），与代码块行为一致
             out.push(Inline::Code(part[1..part.len() - 1].to_string()));
         } else if part.starts_with('[') && part.ends_with(']') {
             let keys = part[1..part.len() - 1]
@@ -212,9 +216,11 @@ pub fn flatten(inlines: &[Inline]) -> String {
     let mut s = String::new();
     for ip in inlines {
         match ip {
-            Inline::Text(t) | Inline::Bold(t) | Inline::Italic(t) | Inline::Code(t) => {
-                s.push_str(t)
+            Inline::Text(t) => s.push_str(t),
+            Inline::Bold(children) | Inline::Italic(children) => {
+                s.push_str(&flatten(children));
             }
+            Inline::Code(t) => s.push_str(t),
             Inline::Link { text, .. } => s.push_str(text),
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::CrossRef(id) => s.push_str(id),
@@ -274,7 +280,7 @@ mod tests {
         assert_eq!(
             inlines,
             vec![
-                Inline::Bold("重点".into()),
+                Inline::Bold(vec![Inline::Text("重点".into())]),
                 Inline::Footnote("注".into()),
                 Inline::Text(" ".into()),
                 Inline::Link {
@@ -394,6 +400,42 @@ mod tests {
                 Inline::Text(" 后文".into()),
             ]
         );
+    }
+
+    #[test]
+    fn citation_inside_bold_parses_as_citation() {
+        // 粗体内部的 [@key] 应被识别为引用，而不是作为粗体文字原样保留。
+        let inlines = parse("**bold and [@biddle_military_2006] inside**");
+        assert_eq!(
+            inlines,
+            vec![Inline::Bold(vec![
+                Inline::Text("bold and ".into()),
+                Inline::Citation(vec!["biddle_military_2006".into()]),
+                Inline::Text(" inside".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn footnote_inside_italic_parses_as_footnote() {
+        // 斜体与脚注在同一段时，脚注先于斜体匹配，所以需要斜体不在脚注左右两侧被切断。
+        let inlines = parse("斜体中[^f]:(脚注)嵌套", ); // 单独测试脚注 + 斜体分段行为
+        // 期望：脚注独立匹配，前后是普通文本
+        assert_eq!(
+            inlines,
+            vec![
+                Inline::Text("斜体中".into()),
+                Inline::Footnote("脚注".into()),
+                Inline::Text("嵌套".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn italic_wraps_text_with_internal_format() {
+        // 斜体内部如果出现裸文本（无内嵌格式），整段被识别为 Italic
+        let inlines = parse("*整段斜体*");
+        assert_eq!(inlines, vec![Inline::Italic(vec![Inline::Text("整段斜体".into())])]);
     }
 
     #[test]

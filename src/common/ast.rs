@@ -48,9 +48,11 @@ pub enum Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inline {
     Text(String),
-    Bold(String),
-    Italic(String),
-    /// 行内代码。如 `code`。
+    /// 加粗。如 `**...**`。内容可以再次包含引用、脚注、嵌套格式。
+    Bold(Vec<Inline>),
+    /// 斜体。如 `*...*`。内容可以再次包含引用、脚注、嵌套格式。
+    Italic(Vec<Inline>),
+    /// 行内代码。如 `code`。保留原样，不解析内部标记。
     Code(String),
     /// 链接。如 [text](url)。
     Link {

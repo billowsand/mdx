@@ -858,8 +858,9 @@ fn add_list_paragraph(docx: Docx, level: u8, prefix: &str, content: &[Inline]) -
 fn inline_run_style(ip: &Inline) -> (String, bool, bool) {
     match ip {
         Inline::Text(t) => (t.clone(), false, false),
-        Inline::Bold(t) => (t.clone(), true, false),
-        Inline::Italic(t) => (t.clone(), false, true),
+        // docx 简化处理：粗体 / 斜体的子节点降级为纯文本（嵌套格式丢失）
+        Inline::Bold(children) => (crate::common::inline::flatten(children), true, false),
+        Inline::Italic(children) => (crate::common::inline::flatten(children), false, true),
         Inline::Code(t) => (t.clone(), false, false),
         Inline::Link { text, .. } => (text.clone(), false, false),
         // docx 暂不支持插图，降级为替代文本

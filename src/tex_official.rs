@@ -19,14 +19,26 @@ use crate::parser;
 
 const OFFICIAL_CLS: &str = include_str!("../resources/official/official.cls");
 
+#[allow(dead_code)]
 const CIRCLE_NUMBERS_1: &[&str] = &[
     "⑴", "⑵", "⑶", "⑷", "⑸", "⑹", "⑺", "⑻", "⑼", "⑽", "⑾", "⑿", "⒀", "⒁", "⒂", "⒃", "⒄", "⒅", "⒆",
     "⒇",
 ];
+#[allow(dead_code)]
 const CIRCLE_NUMBERS_2: &[&str] = &[
     "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲",
     "⑳",
 ];
+
+/// 把列表 level 映射到 paralist 环境名：
+/// 1 → asparaenum（首行缩进的段落式条目）
+/// 2..=6 → inparaenum（行内紧排）
+fn list_env_name(level: u8) -> &'static str {
+    match level {
+        1 => "asparaenum",
+        _ => "inparaenum",
+    }
+}
 
 /// 公文 tex 入口。
 ///
@@ -129,6 +141,12 @@ struct TexEmitter {
     l6: usize,
     in_list: bool,
     list_level: u8,
+    /// 当前打开的列表环境栈：栈顶是最深层。空栈表示无环境打开。
+    /// 用栈而非单一 Option 是为了支持多级列表嵌套（L1 asparaenum 内嵌 L2 inparaenum）。
+    list_env: Vec<(u8, &'static str)>,
+    /// 最近一次 \item 行写入 out 之后的位置；当遇到更深层级时，
+    /// 在此位置插入 \begin{...} 把子环境挂在父 \item 之后。
+    last_item_end: usize,
 }
 
 impl TexEmitter {
@@ -151,11 +169,15 @@ impl TexEmitter {
             l6: 0,
             in_list: false,
             list_level: 0,
+            list_env: Vec::new(),
+            last_item_end: 0,
         }
     }
 
     /// 收尾：把当前缓冲区定稿，返回 (主文件 body, 部件列表)。
     fn finish(mut self) -> (String, Vec<(String, String)>) {
+        // 文件末尾可能停在列表中间，关掉任何未闭合的环境
+        self.reset_list();
         self.finalize_current();
         (self.main, self.parts)
     }
@@ -171,6 +193,8 @@ impl TexEmitter {
 
     /// 切出一个新部件；主文件中按序留下 \input 引用。
     fn start_data_part(&mut self) {
+        // 部件切换前先关掉未闭合的列表环境，保证每个部件文件自身 LaTeX 完整
+        self.reset_list();
         self.finalize_current();
         self.data_idx += 1;
         let path = format!("data/section{:02}.tex", self.data_idx);
@@ -302,10 +326,59 @@ impl TexEmitter {
     }
 
     fn emit_list_item(&mut self, level: u8, content: &[Inline]) {
-        let prefix = self.list_prefix(level);
         let body = render_inlines(content);
-        // 首行缩进交给 cls（parindent=2em）；列表项作为普通段落
-        self.out.push_str(&format!("{}{}\\par\n\n", prefix, body));
+        let env = list_env_name(level);
+        match self.list_env.last() {
+            None => {
+                // 当前没有打开任何列表环境
+                self.out.push_str(&format!("\\begin{{{}}}\n", env));
+                self.list_env.push((level, env));
+            }
+            Some(&(cur_level, cur_env)) if cur_level == level && cur_env == env => {
+                // 同层续项
+            }
+            Some(&(cur_level, _)) if level > cur_level => {
+                // 进入更深层级：把子环境的 \begin 插在上一个 \item 之后，
+                // 这样子环境作为父 \item 的内容出现，而不是兄弟。
+                let env_open = format!("\\begin{{{}}}\n", env);
+                self.out.insert_str(self.last_item_end, &env_open);
+                self.last_item_end += env_open.len();
+                self.list_env.push((level, env));
+            }
+            Some(_) => {
+                // 回到更浅层级：关闭当前所有比 level 更深的环境，
+                // 然后从栈顶（如果还有）继续。
+                while let Some(&(cur_level, cur_env)) = self.list_env.last() {
+                    if cur_level >= level {
+                        self.out.push_str(&format!("\\end{{{}}}\n", cur_env));
+                        self.list_env.pop();
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(&(cur_level, cur_env)) = self.list_env.last() {
+                    if cur_level == level && cur_env == env {
+                        // 回到同层，继续
+                    } else {
+                        // 回到的层级与当前要写的不一致——关闭剩余的全部
+                        while let Some(&(_, cur_env)) = self.list_env.last() {
+                            self.out.push_str(&format!("\\end{{{}}}\n", cur_env));
+                            self.list_env.pop();
+                        }
+                        self.out.push_str(&format!("\\begin{{{}}}\n", env));
+                        self.list_env.push((level, env));
+                    }
+                } else {
+                    // 栈已空，开新的
+                    self.out.push_str(&format!("\\begin{{{}}}\n", env));
+                    self.list_env.push((level, env));
+                }
+            }
+        }
+        // 写入当前 \item
+        let item_str = format!("\\item {}\n", body);
+        self.out.push_str(&item_str);
+        self.last_item_end = self.out.len();
         self.in_list = true;
         self.list_level = level;
     }
@@ -356,6 +429,10 @@ impl TexEmitter {
     }
 
     fn reset_list(&mut self) {
+        // 把所有打开的列表环境按从深到浅依次关闭，写到当前 out 末尾。
+        while let Some((_, env)) = self.list_env.pop() {
+            self.out.push_str(&format!("\\end{{{}}}\n", env));
+        }
         self.in_list = false;
         self.list_level = 0;
         self.l1 = 0;
@@ -368,6 +445,10 @@ impl TexEmitter {
 
     /// 镜像 docx_official::Converter::get_list_prefix 的行为，确保 6 级前缀循环
     /// 在 tex 输出中和 docx 完全一致。
+    ///
+    /// 已不再被 emit_list_item 调用（改用 paralist 环境标签），保留以备 docx
+    /// 对齐检查或未来回退使用。
+    #[allow(dead_code)]
     fn list_prefix(&mut self, level: u8) -> String {
         match level {
             1 => {
@@ -470,14 +551,14 @@ fn render_inlines(inlines: &[Inline]) -> String {
     for ip in inlines {
         match ip {
             Inline::Text(t) => s.push_str(&escape_latex(t)),
-            Inline::Bold(t) => {
+            Inline::Bold(children) => {
                 s.push_str("\\textbf{");
-                s.push_str(&escape_latex(t));
+                s.push_str(&render_inlines(children));
                 s.push('}');
             }
-            Inline::Italic(t) => {
+            Inline::Italic(children) => {
                 s.push_str("\\textit{");
-                s.push_str(&escape_latex(t));
+                s.push_str(&render_inlines(children));
                 s.push('}');
             }
             Inline::Code(t) => {
@@ -583,9 +664,9 @@ mod tests {
     fn inline_bold_italic_emit() {
         let inlines = vec![
             Inline::Text("一段".into()),
-            Inline::Bold("重点".into()),
+            Inline::Bold(vec![Inline::Text("重点".into())]),
             Inline::Text("和".into()),
-            Inline::Italic("斜体".into()),
+            Inline::Italic(vec![Inline::Text("斜体".into())]),
         ];
         assert_eq!(
             render_inlines(&inlines),
@@ -627,8 +708,84 @@ mod tests {
             level: 2,
             content: vec![Inline::Text("c".into())],
         });
-        let body = test_body(e);
-        assert!(body.contains('①') && body.contains('②') && body.contains('⑴'));
+        let (body, _parts) = e.finish();
+        // L1 两项应被包在 asparaenum 里
+        assert!(
+            body.contains("\\begin{asparaenum}") && body.contains("\\end{asparaenum}"),
+            "expected asparaenum wrapper, got: {}",
+            body
+        );
+        assert!(body.contains("\\item a"), "missing L1 item a: {}", body);
+        assert!(body.contains("\\item b"), "missing L1 item b: {}", body);
+        // L2 单独一项应被包在 inparaenum 里
+        assert!(
+            body.contains("\\begin{inparaenum}") && body.contains("\\end{inparaenum}"),
+            "expected inparaenum wrapper, got: {}",
+            body
+        );
+        assert!(body.contains("\\item c"), "missing L2 item c: {}", body);
+    }
+
+    #[test]
+    fn list_env_closes_on_non_list_block() {
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("第一项".into())],
+        });
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "分隔标题".into(),
+        });
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("第二项".into())],
+        });
+        let (main, parts) = e.finish();
+        // 列表项会被部件切分到 data/sectionNN.tex，扫描主文件 + 所有部件
+        let mut all = main.clone();
+        for (_path, body) in &parts {
+            all.push('\n');
+            all.push_str(body);
+        }
+        let begins = all.matches("\\begin{asparaenum}").count();
+        let ends = all.matches("\\end{asparaenum}").count();
+        assert_eq!(begins, 2, "expected 2 asparaenum opens, got: {}", all);
+        assert_eq!(ends, 2, "expected 2 asparaenum closes, got: {}", all);
+    }
+
+    #[test]
+    fn nested_list_renders_inner_env_inside_outer_item() {
+        // - 新的第一级
+        //   - 新的第二级
+        // 应得到：父 asparaenum 内嵌子 inparaenum，而不是拆成两个并列环境
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("新的第一级".into())],
+        });
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 2,
+            content: vec![Inline::Text("新的第二级".into())],
+        });
+        let (body, _parts) = e.finish();
+        // 子环境必须出现在父 \item 之后、父 \end 之间
+        let begin_outer = body.find("\\begin{asparaenum}").expect("outer begin");
+        let end_outer = body.find("\\end{asparaenum}").expect("outer end");
+        let begin_inner = body.find("\\begin{inparaenum}").expect("inner begin");
+        let item_parent = body.find("\\item 新的第一级").expect("parent item");
+        let item_child = body.find("\\item 新的第二级").expect("child item");
+        let end_inner = body.find("\\end{inparaenum}").expect("inner end");
+        assert!(
+            begin_outer < item_parent && item_parent < begin_inner && begin_inner < item_child
+                && item_child < end_inner && end_inner < end_outer,
+            "子环境应嵌套在父环境内，实际顺序：\n{}",
+            body
+        );
     }
 
     #[test]

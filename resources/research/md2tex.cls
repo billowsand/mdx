@@ -148,9 +148,8 @@
 \captionsetup{labelsep=space}
 
 %% ============================================================
-%% 列表设置
+%% 列表设置（依赖下面的 \circlenum / \textcriclednum，所以放在它们之后）
 %% ============================================================
-\setenumerate[1]{leftmargin=0pt,parsep=0pt,topsep=0pt,itemsep=0pt,labelsep=0pt,itemindent=\widthof{一二},listparindent=0pt}
 
 %% ============================================================
 %% 字号与段落
@@ -176,7 +175,9 @@
 \newcommand{\circlenum}[1]{%
 \encircle\ifcase#1 \or ⑴\or ⑵\or ⑶\or ⑷\or ⑸\or ⑹\or ⑺\or ⑻\or ⑼\or ⑽\or ⑾\or ⑿\or ⒀\or ⒁\or ⒂\or ⒃\or ⒄\or ⒅\or ⒆\or ⒇\else{Error}\fi}
 
-\setdefaultenum{\circlenum{\arabic{enumi}}\hspace{-0.2em}}{\textcriclednum{\arabic{enumii}}\hspace{-0.3em}}{a.}{(a).}
+\setdefaultenum{\circlenum{\arabic{enumi}}\hspace{-0.2em}}{\textcriclednum{\arabic{enumii}}\hspace{-0.3em}}{(\Alph{enumiii})}{(\alph{enumiv})}
+\setenumerate[5]{label=\Roman*.}  % L5 (paralist \setenumerate 接受 level)
+\setenumerate[6]{label=\roman*.}  % L6
 
 %% ============================================================
 %% 计数器

@@ -381,9 +381,9 @@ mod tests {
             _ => unreachable!(),
         };
         assert!(matches!(&inlines[0], Inline::Text(t) if t == "一段"));
-        assert!(matches!(&inlines[1], Inline::Bold(t) if t == "加粗"));
+        assert!(matches!(&inlines[1], Inline::Bold(children) if matches!(children.as_slice(), [Inline::Text(t)] if t == "加粗")));
         assert!(matches!(&inlines[2], Inline::Text(t) if t == "和"));
-        assert!(matches!(&inlines[3], Inline::Italic(t) if t == "斜体"));
+        assert!(matches!(&inlines[3], Inline::Italic(children) if matches!(children.as_slice(), [Inline::Text(t)] if t == "斜体")));
     }
 
     #[test]

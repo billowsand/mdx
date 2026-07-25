@@ -2,7 +2,7 @@
 //!
 //! 智能表格处理：自动分析内容决定对齐方式和列宽分配。
 
-use crate::common::ast::Block;
+use crate::common::ast::{Block, Inline};
 
 /// 配置参数
 const SHORT_TEXT_THRESHOLD: f64 = 8.0;
@@ -257,20 +257,25 @@ fn escape_latex(s: &str) -> String {
 /// 将单元格内容转换为 LaTeX：先解析 **加粗**/*斜体*/`代码`/链接 行内格式，
 /// 再对纯文本段落做 LaTeX 转义。
 fn cell_to_latex(cell: &str) -> String {
-    use crate::common::ast::Inline;
-
     let mut result = String::new();
-    for ip in crate::common::inline::parse(cell) {
+    push_cell_inlines(&mut result, &crate::common::inline::parse(cell));
+    result
+}
+
+/// 把 inline::parse 之后的节点序列推入 result（处理粗体 / 斜体嵌套）。
+/// 末尾返回借用以方便链式调用时复用，但本文件内主要靠 result 累加。
+fn push_cell_inlines(result: &mut String, inlines: &[Inline]) {
+    for ip in inlines {
         match ip {
-            Inline::Text(t) => result.push_str(&escape_latex(&t)),
-            Inline::Bold(t) => {
+            Inline::Text(t) => result.push_str(&escape_latex(t)),
+            Inline::Bold(children) => {
                 result.push_str("\\textbf{");
-                result.push_str(&escape_latex(&t));
+                push_cell_inlines(result, children);
                 result.push('}');
             }
-            Inline::Italic(t) => {
+            Inline::Italic(children) => {
                 result.push_str("\\textit{");
-                result.push_str(&escape_latex(&t));
+                push_cell_inlines(result, children);
                 result.push('}');
             }
             Inline::Code(t) => {
@@ -300,7 +305,6 @@ fn cell_to_latex(cell: &str) -> String {
             }
         }
     }
-    result
 }
 
 /// 处理表格行

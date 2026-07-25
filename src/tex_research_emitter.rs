@@ -75,6 +75,12 @@ pub struct TexResearchEmitter {
     l6: usize,
     in_list: bool,
     list_level: u8,
+    /// 当前打开的列表环境栈：栈顶是最深层。用栈而非 Option 是为了支持
+    /// 多级列表嵌套（L1 asparaenum 内嵌 L2 inparaenum）。
+    list_env: Vec<(u8, &'static str)>,
+    /// 最近一次 \item 行写入 out 之后的位置；遇到更深层级时，
+    /// 在此位置插入 \begin{...} 把子环境挂在父 \item 之后。
+    last_item_end: usize,
 }
 
 impl TexResearchEmitter {
@@ -107,11 +113,15 @@ impl TexResearchEmitter {
             l6: 0,
             in_list: false,
             list_level: 0,
+            list_env: Vec::new(),
+            last_item_end: 0,
         }
     }
 
     /// 收尾：把当前缓冲区定稿，返回 (主文件 body, 部件列表)。
     pub fn finish(mut self) -> (String, Vec<(String, String)>) {
+        // 文件末尾可能停在列表中间，关掉未闭合的环境
+        self.reset_list();
         self.finalize_current();
         (self.main, self.parts)
     }
@@ -128,12 +138,15 @@ impl TexResearchEmitter {
     /// 切回主文件（区段标记等内容始终落在主文件）。
     fn start_main(&mut self) {
         if self.current_part.is_some() {
+            // 切回主文件前先关闭未闭合的列表环境，避免 LaTeX 环境跨文件
+            self.reset_list();
             self.finalize_current();
         }
     }
 
     /// 切出一个新部件；主文件中按序留下 \input 引用。
     fn start_part(&mut self, path: String) {
+        self.reset_list();
         self.finalize_current();
         self.main.push_str(&format!("\\input{{{}}}\n\n", path));
         self.current_part = Some(path);
@@ -198,6 +211,9 @@ impl TexResearchEmitter {
     fn handle_marker(&mut self, kind: &MarkerKind) {
         // 区段标记产生的内容（\appendix、摘要、参考文献等）始终落在主文件
         self.start_main();
+        // 区段切换必然打断列表——关闭当前未闭合的列表环境，
+        // 否则 \appendix / \chapter* 等会出现在 \begin{asparaenum} 内部
+        self.reset_list();
         match kind {
             MarkerKind::Abstract => {
                 self.mode = SectionMode::Abstract;
@@ -236,10 +252,8 @@ impl TexResearchEmitter {
                     self.finish_abstract();
                 }
                 self.mode = SectionMode::Reference;
-                self.out.push_str(
-                    "\\chapter*{参考文献}\n\\addcontentsline{toc}{chapter}{参考文献}\n\n",
-                );
-                self.reference_heading_done = true;
+                // 章节标题由第一个 H1 通过 emit_heading 输出（与 Changelog 一致），
+                // 避免这里再 emit 一份导致重复
                 self.reset_counters();
             }
             MarkerKind::Body => {
@@ -464,20 +478,68 @@ impl TexResearchEmitter {
     }
 
     fn emit_list_item(&mut self, level: u8, content: &[Inline]) {
-        let prefix = self.list_prefix(level);
-        let body = render_inlines(content);
-
+        // 摘要内仍走旧的 prefix+body 路径，不包环境（摘要作为整体渲染）
         if self.in_abstract {
+            let prefix = self.list_prefix(level);
+            let body = render_inlines(content);
             self.abstract_content.push(format!("{}{}", prefix, body));
             return;
         }
 
-        self.out.push_str(&format!("{}{}\\par\n\n", prefix, body));
+        let body = render_inlines(content);
+        let env = list_env_name(level);
+        match self.list_env.last() {
+            None => {
+                self.out.push_str(&format!("\\begin{{{}}}\n", env));
+                self.list_env.push((level, env));
+            }
+            Some(&(cur_level, cur_env)) if cur_level == level && cur_env == env => {
+                // 同层续项
+            }
+            Some(&(cur_level, _)) if level > cur_level => {
+                // 进入更深层级：子环境 \begin 插在上一个 \item 之后
+                let env_open = format!("\\begin{{{}}}\n", env);
+                self.out.insert_str(self.last_item_end, &env_open);
+                self.last_item_end += env_open.len();
+                self.list_env.push((level, env));
+            }
+            Some(_) => {
+                while let Some(&(cur_level, cur_env)) = self.list_env.last() {
+                    if cur_level >= level {
+                        self.out.push_str(&format!("\\end{{{}}}\n", cur_env));
+                        self.list_env.pop();
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(&(cur_level, cur_env)) = self.list_env.last() {
+                    if cur_level == level && cur_env == env {
+                        // 回到同层，继续
+                    } else {
+                        while let Some(&(_, cur_env)) = self.list_env.last() {
+                            self.out.push_str(&format!("\\end{{{}}}\n", cur_env));
+                            self.list_env.pop();
+                        }
+                        self.out.push_str(&format!("\\begin{{{}}}\n", env));
+                        self.list_env.push((level, env));
+                    }
+                } else {
+                    self.out.push_str(&format!("\\begin{{{}}}\n", env));
+                    self.list_env.push((level, env));
+                }
+            }
+        }
+        let item_str = format!("\\item {}\n", body);
+        self.out.push_str(&item_str);
+        self.last_item_end = self.out.len();
         self.in_list = true;
         self.list_level = level;
     }
 
     fn reset_list(&mut self) {
+        while let Some((_, env)) = self.list_env.pop() {
+            self.out.push_str(&format!("\\end{{{}}}\n", env));
+        }
         self.in_list = false;
         self.list_level = 0;
         self.l1 = 0;
@@ -624,14 +686,14 @@ fn render_inlines(inlines: &[Inline]) -> String {
     for ip in inlines {
         match ip {
             Inline::Text(t) => s.push_str(&escape_latex(t)),
-            Inline::Bold(t) => {
+            Inline::Bold(children) => {
                 s.push_str("\\textbf{");
-                s.push_str(&escape_latex(t));
+                s.push_str(&render_inlines(children));
                 s.push('}');
             }
-            Inline::Italic(t) => {
+            Inline::Italic(children) => {
                 s.push_str("\\textit{");
-                s.push_str(&escape_latex(t));
+                s.push_str(&render_inlines(children));
                 s.push('}');
             }
             Inline::Code(t) => {
@@ -758,6 +820,16 @@ fn int_to_roman(n: usize) -> String {
     result
 }
 
+/// 把列表 level 映射到 paralist 环境名：
+/// 1 → asparaenum（首行缩进的段落式条目）
+/// 2..=6 → inparaenum（行内紧排）
+fn list_env_name(level: u8) -> &'static str {
+    match level {
+        1 => "asparaenum",
+        _ => "inparaenum",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,9 +897,21 @@ mod tests {
             content: vec![Inline::Text("子项".into())],
         });
         let body = test_body(e);
-        assert!(body.contains("1. "));
-        assert!(body.contains("2. "));
-        assert!(body.contains("(1) "));
+        // L1 两项应被包在 asparaenum 里
+        assert!(
+            body.contains("\\begin{asparaenum}") && body.contains("\\end{asparaenum}"),
+            "expected asparaenum wrapper, got: {}",
+            body
+        );
+        assert!(body.contains("\\item 第一项"), "missing L1 第一项: {}", body);
+        assert!(body.contains("\\item 第二项"), "missing L1 第二项: {}", body);
+        // L2 单独一项应被包在 inparaenum 里
+        assert!(
+            body.contains("\\begin{inparaenum}") && body.contains("\\end{inparaenum}"),
+            "expected inparaenum wrapper, got: {}",
+            body
+        );
+        assert!(body.contains("\\item 子项"), "missing L2 子项: {}", body);
     }
 
     #[test]
@@ -1254,6 +1338,11 @@ mod tests {
             text: "版本变更记录".into(),
         });
         e.emit_block(&Block::Marker(MarkerKind::Reference));
+        // 参考文献模式：标题由第一个 H1 产出，与 Changelog 行为一致
+        e.emit_block(&Block::Heading {
+            level: 1,
+            text: "参考文献".into(),
+        });
         e.emit_block(&Block::List {
             ordered: true,
             level: 1,
@@ -1263,7 +1352,7 @@ mod tests {
 
         assert_eq!(parts.len(), 1, "只有正文一章: {parts:?}");
         assert!(main.contains("\\chapter*{版本变更记录}"));
-        assert!(main.contains("参考文献"));
+        assert!(main.contains("\\chapter*{参考文献}"));
         assert!(main.contains("文献一"));
     }
 }
