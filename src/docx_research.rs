@@ -105,6 +105,10 @@ pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
     let mut emitter = MainEmitter::new();
     docx = emitter.emit_all(docx, &split.main);
 
+    if let Some(dir) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("创建输出目录 {} 失败", dir.display()))?;
+    }
     let file = File::create(&output_path)
         .with_context(|| format!("创建输出文件 {} 失败", output_path.display()))?;
     docx.build()

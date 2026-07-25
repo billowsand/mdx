@@ -736,6 +736,10 @@ impl Converter {
     }
 
     fn write(&self, output: &Path) -> Result<()> {
+        if let Some(dir) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("创建输出目录 {} 失败", dir.display()))?;
+        }
         let file = File::create(output)
             .with_context(|| format!("创建输出文件 {} 失败", output.display()))?;
         self.docx

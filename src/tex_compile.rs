@@ -12,12 +12,12 @@ enum TexEngine {
 
 /// Compile a generated `.tex` file to PDF when a supported TeX engine exists.
 ///
-/// This is best-effort for engine discovery: if neither `tectonic` nor `xelatex`
+/// This is best-effort for engine discovery: if neither `xelatex` nor `tectonic`
 /// is available, conversion still succeeds and leaves the `.tex` for manual
 /// compilation.
 pub fn compile_pdf_if_available(tex_path: &Path) -> Result<()> {
     let Some(engine) = detect_engine() else {
-        println!("  未检测到 tectonic 或 xelatex，跳过 PDF 编译");
+        println!("  未检测到 xelatex 或 tectonic，跳过 PDF 编译");
         return Ok(());
     };
 
@@ -36,11 +36,13 @@ pub fn compile_pdf_if_available(tex_path: &Path) -> Result<()> {
 }
 
 fn detect_engine() -> Option<TexEngine> {
-    if command_available("tectonic") {
-        return Some(TexEngine::Tectonic);
-    }
+    // 优先 xelatex：它配合系统 biber，参考文献路径更稳；tectonic 自带的 biblatex
+    // 版本可能与系统 biber 不匹配。仅在没有 xelatex 时回退到 tectonic。
     if command_available("xelatex") {
         return Some(TexEngine::Xelatex);
+    }
+    if command_available("tectonic") {
+        return Some(TexEngine::Tectonic);
     }
     None
 }
