@@ -96,6 +96,7 @@ mod tests {
         Block::Paragraph(vec![Inline::Image {
             alt: alt.into(),
             url: url.into(),
+            label: None,
         }])
     }
 

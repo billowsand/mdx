@@ -62,6 +62,9 @@ impl Merger {
         println!("正在解析 markdown...");
         let mut blocks = parser::parse(&markdown_content);
 
+        // 交叉引用检查：锚点缺失/重复/不生效即停止转换
+        crate::common::crossref::check_or_bail(&blocks, crate::common::crossref::Support::Full)?;
+
         // 图片：复制到输出目录 figures/ 并改写引用路径
         let out_dir = output_tex.parent().unwrap_or(Path::new("."));
         let base_dir = if is_dir {

@@ -30,6 +30,11 @@ pub enum Block {
     /// 区段切换标记，由 `<!-- [...] -->` 注释触发。emitter 据此切模式。
     Marker(MarkerKind),
 
+    /// 交叉引用锚点，作用于紧随其后的标题或表格块。由标题/表题尾部的
+    /// `{#id}` 属性产生（图片标签直接挂在 Inline::Image 上，不经此块）。
+    /// 仅 research tex 完整支持；official / docx 忽略。
+    Label(String),
+
     /// 代码块。`lang` 为语言标识（如 "rust", "python"），`content` 为代码内容。
     CodeBlock {
         lang: Option<String>,
@@ -53,10 +58,14 @@ pub enum Inline {
         url: String,
     },
     /// 图片。如 ![alt](path)。tex emitter 对独占一段的图片输出 figure 环境。
+    /// `label` 来自图片后紧跟的 `{#id}` 属性，有 caption 时输出 \label{id}。
     Image {
         alt: String,
         url: String,
+        label: Option<String>,
     },
+    /// 交叉引用。如 {@chap:overview}，tex 输出 \ref{id}；其他端降级为 id 文本。
+    CrossRef(String),
     /// 行内脚注。如 `[^1]:(注释内容)`，仅保存注释内容；编号由输出格式自行生成。
     Footnote(String),
 }

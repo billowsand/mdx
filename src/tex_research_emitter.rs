@@ -40,6 +40,8 @@ pub struct TexResearchEmitter {
     data_idx: usize,
     /// appendix/appendixNN 序号
     appendix_file_idx: usize,
+    /// 待挂接到下一个标题/表格的交叉引用锚点（Block::Label 设置）
+    pending_label: Option<String>,
     /// 摘要收集（摘要模式下收集的内容）
     abstract_content: Vec<String>,
     /// 当前是否在摘要模式
@@ -84,6 +86,7 @@ impl TexResearchEmitter {
             current_part: None,
             data_idx: 0,
             appendix_file_idx: 0,
+            pending_label: None,
             abstract_content: Vec::new(),
             in_abstract: false,
             mode: SectionMode::Normal,
@@ -176,6 +179,10 @@ impl TexResearchEmitter {
             Block::Marker(kind) => {
                 self.handle_marker(kind);
             }
+            Block::Label(id) => {
+                // 锚点作用于紧随其后的标题/表格块
+                self.pending_label = Some(id.clone());
+            }
             Block::CodeBlock { lang, content } => {
                 self.emit_code_block(lang, content);
             }
@@ -251,6 +258,12 @@ impl TexResearchEmitter {
 
     fn emit_heading(&mut self, level: u8, text: &str) {
         let escaped = escape_latex(text);
+        // 待挂接的锚点；摘要/变更记录/参考文献等不编号标题直接丢弃
+        let label_cmd = self
+            .pending_label
+            .take()
+            .map(|l| format!("\\label{{{}}}", l))
+            .unwrap_or_default();
 
         if self.in_abstract {
             if !self.abstract_skipped_heading {
@@ -295,20 +308,28 @@ impl TexResearchEmitter {
                 (1, _) | (2, false) => {
                     self.appendix_idx += 1;
                     self.start_appendix_part();
-                    self.out
-                        .push_str(&format!("\\chapter{{{}}}\\par\n\n", escaped));
+                    self.out.push_str(&format!(
+                        "\\chapter{{{}}}{}\\par\n\n",
+                        escaped, label_cmd
+                    ));
                 }
                 (2, true) | (3, false) => {
-                    self.out
-                        .push_str(&format!("\\section{{{}}}\\par\n\n", escaped));
+                    self.out.push_str(&format!(
+                        "\\section{{{}}}{}\\par\n\n",
+                        escaped, label_cmd
+                    ));
                 }
                 (3, true) | (4, false) => {
-                    self.out
-                        .push_str(&format!("\\subsection{{{}}}\\par\n\n", escaped));
+                    self.out.push_str(&format!(
+                        "\\subsection{{{}}}{}\\par\n\n",
+                        escaped, label_cmd
+                    ));
                 }
                 _ => {
-                    self.out
-                        .push_str(&format!("\\subsubsection{{{}}}\\par\n\n", escaped));
+                    self.out.push_str(&format!(
+                        "\\subsubsection{{{}}}{}\\par\n\n",
+                        escaped, label_cmd
+                    ));
                 }
             }
             return;
@@ -321,26 +342,34 @@ impl TexResearchEmitter {
                 self.section_num = 0;
                 self.subsection_num = 0;
                 self.start_data_part();
-                self.out
-                    .push_str(&format!("\\chapter{{{}}}\\par\n\n", escaped));
+                self.out.push_str(&format!(
+                    "\\chapter{{{}}}{}\\par\n\n",
+                    escaped, label_cmd
+                ));
             }
             // level 3 → \section
             3 => {
                 self.section_num += 1;
                 self.subsection_num = 0;
-                self.out
-                    .push_str(&format!("\\section{{{}}}\\par\n\n", escaped));
+                self.out.push_str(&format!(
+                    "\\section{{{}}}{}\\par\n\n",
+                    escaped, label_cmd
+                ));
             }
             // level 4 → \subsection
             4 => {
                 self.subsection_num += 1;
-                self.out
-                    .push_str(&format!("\\subsection{{{}}}\\par\n\n", escaped));
+                self.out.push_str(&format!(
+                    "\\subsection{{{}}}{}\\par\n\n",
+                    escaped, label_cmd
+                ));
             }
             // level 5 → \subsubsection
             5 => {
-                self.out
-                    .push_str(&format!("\\subsubsection{{{}}}\\par\n\n", escaped));
+                self.out.push_str(&format!(
+                    "\\subsubsection{{{}}}{}\\par\n\n",
+                    escaped, label_cmd
+                ));
             }
             // level 6+ → 忽略
             _ => {}
@@ -349,8 +378,8 @@ impl TexResearchEmitter {
 
     fn emit_paragraph(&mut self, inlines: &[Inline]) {
         // 独占一段的图片（允许前后有空白文本）输出为 figure 环境
-        if let Some((alt, url)) = sole_image(inlines) {
-            self.emit_figure(alt, url);
+        if let Some((alt, url, label)) = sole_image(inlines) {
+            self.emit_figure(alt, url, label);
             return;
         }
         let body = render_inlines(inlines);
@@ -372,7 +401,7 @@ impl TexResearchEmitter {
         );
     }
 
-    fn emit_figure(&mut self, alt: &str, url: &str) {
+    fn emit_figure(&mut self, alt: &str, url: &str, label: Option<&str>) {
         let mut fig = String::from("\\begin{figure}[htbp]\n\\centering\n");
         fig.push_str(&format!(
             "\\includegraphics[width=\\textwidth]{{{}}}\n",
@@ -380,6 +409,10 @@ impl TexResearchEmitter {
         ));
         if !alt.is_empty() {
             fig.push_str(&format!("\\caption{{{}}}\n", escape_latex(alt)));
+            // \label 必须跟在 \caption 之后，引用的才是图号
+            if let Some(lab) = label {
+                fig.push_str(&format!("\\label{{{}}}\n", lab));
+            }
         }
         fig.push_str("\\end{figure}");
 
@@ -395,15 +428,17 @@ impl TexResearchEmitter {
         if rows.is_empty() {
             return;
         }
+        // 表题尾部锚点（Block::Label → pending_label）
+        let label = self.pending_label.take();
 
         if self.in_abstract {
             // 摘要模式：收集表格
-            let table_latex = emit_longtblr(rows, caption);
+            let table_latex = emit_longtblr(rows, caption, label.as_deref());
             self.abstract_content.push(table_latex);
             return;
         }
 
-        let table_latex = emit_longtblr(rows, caption);
+        let table_latex = emit_longtblr(rows, caption, label.as_deref());
         self.out.push_str(&table_latex);
         self.out.push_str(
             "
@@ -577,14 +612,14 @@ impl Default for TexResearchEmitter {
 
 // ========== 字符串工具 ==========
 
-/// 段落内容去掉纯空白 Text 后只剩一张图片时，返回其 (alt, url)。
-fn sole_image(inlines: &[Inline]) -> Option<(&str, &str)> {
+/// 段落内容去掉纯空白 Text 后只剩一张图片时，返回其 (alt, url, label)。
+fn sole_image(inlines: &[Inline]) -> Option<(&str, &str, Option<&str>)> {
     let meaningful: Vec<&Inline> = inlines
         .iter()
         .filter(|ip| !matches!(ip, Inline::Text(t) if t.trim().is_empty()))
         .collect();
     match meaningful.as_slice() {
-        [Inline::Image { alt, url }] => Some((alt, url)),
+        [Inline::Image { alt, url, label }] => Some((alt, url, label.as_deref())),
         _ => None,
     }
 }
@@ -620,6 +655,11 @@ fn render_inlines(inlines: &[Inline]) -> String {
             Inline::Image { url, .. } => {
                 s.push_str("\\includegraphics[width=\\textwidth]{");
                 s.push_str(&escape_href_url(url));
+                s.push('}');
+            }
+            Inline::CrossRef(id) => {
+                s.push_str("\\ref{");
+                s.push_str(id);
                 s.push('}');
             }
             Inline::Footnote(t) => {
@@ -1014,6 +1054,7 @@ mod tests {
         e.emit_block(&Block::Paragraph(vec![Inline::Image {
             alt: "总体框架".into(),
             url: "figs/framework.png".into(),
+            label: Some("fig:framework".into()),
         }]));
         let body = test_body(e);
         assert!(body.contains("\\begin{figure}[htbp]"), "got {}", body);
@@ -1024,6 +1065,10 @@ mod tests {
             body
         );
         assert!(body.contains("\\caption{总体框架}"));
+        // \label 必须跟在 \caption 之后
+        let cap = body.find("\\caption{总体框架}").expect("caption");
+        let lab = body.find("\\label{fig:framework}").expect("label");
+        assert!(cap < lab, "got {}", body);
         assert!(body.contains("\\end{figure}"));
     }
 
@@ -1033,6 +1078,7 @@ mod tests {
         e.emit_block(&Block::Paragraph(vec![Inline::Image {
             alt: String::new(),
             url: "a.png".into(),
+            label: None,
         }]));
         let body = test_body(e);
         assert!(body.contains("\\includegraphics[width=\\textwidth]{a.png}"));
@@ -1046,9 +1092,67 @@ mod tests {
             Inline::Image {
                 alt: "图".into(),
                 url: "a.png".into(),
+                label: None,
             },
         ]);
         assert_eq!(rendered, "见\\includegraphics[width=\\textwidth]{a.png}");
+    }
+
+    #[test]
+    fn test_heading_label_emits_label_after_chapter() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Label("chap:overview".into()));
+        e.emit_block(&Block::Heading {
+            level: 2,
+            text: "概述".into(),
+        });
+        let (main, parts) = e.finish();
+        assert!(!main.contains("\\label"));
+        assert!(
+            parts[0].1.contains("\\chapter{概述}\\label{chap:overview}"),
+            "got {}",
+            parts[0].1
+        );
+    }
+
+    #[test]
+    fn test_section_label_emits_label() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Label("sec:bg".into()));
+        e.emit_block(&Block::Heading {
+            level: 3,
+            text: "背景".into(),
+        });
+        let body = test_body(e);
+        assert!(body.contains("\\section{背景}\\label{sec:bg}"), "got {body}");
+    }
+
+    #[test]
+    fn test_crossref_renders_ref() {
+        let rendered = render_inlines(&[
+            Inline::Text("见第".into()),
+            Inline::CrossRef("chap:overview".into()),
+            Inline::Text("章".into()),
+        ]);
+        assert_eq!(rendered, "见第\\ref{chap:overview}章");
+    }
+
+    #[test]
+    fn test_table_label_passed_to_longtblr() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Label("tbl:products".into()));
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["1".into(), "2".into()],
+            ],
+            caption: Some("产品清单".into()),
+        });
+        let body = test_body(e);
+        assert!(
+            body.contains("caption={产品清单}, label={tbl:products}"),
+            "got {body}"
+        );
     }
 
     #[test]

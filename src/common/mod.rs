@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 pub mod ast;
+pub mod crossref;
 pub mod heading;
 pub mod images;
 pub mod inline;

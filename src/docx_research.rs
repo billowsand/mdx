@@ -516,6 +516,10 @@ impl MainEmitter {
                 docx
             }
             Block::Empty => docx,
+            Block::Label(_) => {
+                // docx 暂不支持交叉引用锚点，忽略
+                docx
+            }
         }
     }
 
@@ -664,7 +668,7 @@ impl ChangelogEmitter {
                 self.list.reset();
                 add_table(docx, rows)
             }
-            Block::Marker(_) | Block::Empty | Block::CodeBlock { .. } => docx,
+            Block::Marker(_) | Block::Empty | Block::CodeBlock { .. } | Block::Label(_) => docx,
         }
     }
 }
@@ -863,6 +867,8 @@ fn add_inlines(mut p: Paragraph, inlines: &[Inline]) -> Paragraph {
             Inline::Link { text, .. } => (text.clone(), false, false),
             // docx 暂不支持插图，降级为替代文本
             Inline::Image { alt, .. } => (alt.clone(), false, false),
+            // docx 暂不支持交叉引用，降级为 id 文本
+            Inline::CrossRef(id) => (id.clone(), false, false),
             // docx 暂不生成脚注部件，降级为全角括号内联注释
             Inline::Footnote(t) => (format!("（{}）", t), false, false),
         };
@@ -912,6 +918,8 @@ fn add_table(docx: Docx, rows: &[Vec<String>]) -> Docx {
                     Inline::Link { text, .. } => (text.clone(), false, false),
                     // docx 暂不支持插图，降级为替代文本
                     Inline::Image { alt, .. } => (alt.clone(), false, false),
+                    // docx 暂不支持交叉引用，降级为 id 文本
+                    Inline::CrossRef(id) => (id.clone(), false, false),
                     // docx 暂不生成脚注部件，降级为全角括号内联注释
                     Inline::Footnote(t) => (format!("（{}）", t), false, false),
                 };

@@ -35,7 +35,7 @@ pub fn parse(content: &str) -> Vec<Block> {
             continue;
         }
 
-        // 2) 标题 `#` ~ `######`
+        // 2) 标题 `#` ~ `######`（尾部 `{#id}` 剥离为交叉引用锚点）
         if line.starts_with('#') {
             let mut level: u8 = 0;
             let mut rest = line;
@@ -44,6 +44,10 @@ pub fn parse(content: &str) -> Vec<Block> {
                 rest = &rest[1..];
             }
             let body = heading::clean(rest.trim());
+            let (body, label) = strip_label_attr(&body);
+            if let Some(id) = label {
+                blocks.push(Block::Label(id));
+            }
             blocks.push(Block::Heading { level, text: body });
             i += 1;
             continue;
@@ -69,14 +73,19 @@ pub fn parse(content: &str) -> Vec<Block> {
             let (parsed, new_i) = table::parse_table(&lines, i);
             if let Some(rows) = parsed {
                 let (trailing_caption, final_i) = parse_trailing_table_caption(&lines, new_i);
-                blocks.push(Block::Table {
-                    rows,
-                    caption: leading_caption.or(trailing_caption),
-                });
+                let (caption, label) = match leading_caption.or(trailing_caption) {
+                    Some((c, l)) => (Some(c), l),
+                    None => (None, None),
+                };
+                // 表题尾部 `{#id}` 锚点挂在随后的表格块上
+                if let Some(id) = label {
+                    blocks.push(Block::Label(id));
+                }
+                blocks.push(Block::Table { rows, caption });
                 i = final_i;
                 continue;
             }
-            if let Some(caption) = leading_caption {
+            if let Some((caption, _)) = leading_caption {
                 blocks.push(Block::Paragraph(inline::parse(&format!(
                     "Table: {}",
                     caption
@@ -113,7 +122,7 @@ pub fn parse(content: &str) -> Vec<Block> {
     blocks
 }
 
-fn take_leading_table_caption(blocks: &mut Vec<Block>) -> Option<String> {
+fn take_leading_table_caption(blocks: &mut Vec<Block>) -> Option<(String, Option<String>)> {
     let mut empty_tail = Vec::new();
     while matches!(blocks.last(), Some(Block::Empty)) {
         empty_tail.push(blocks.pop().expect("last block"));
@@ -138,7 +147,10 @@ fn take_leading_table_caption(blocks: &mut Vec<Block>) -> Option<String> {
     caption
 }
 
-fn parse_trailing_table_caption(lines: &[String], start: usize) -> (Option<String>, usize) {
+fn parse_trailing_table_caption(
+    lines: &[String],
+    start: usize,
+) -> (Option<(String, Option<String>)>, usize) {
     let mut i = start;
     while i < lines.len() && lines[i].trim().is_empty() {
         i += 1;
@@ -153,7 +165,7 @@ fn parse_trailing_table_caption(lines: &[String], start: usize) -> (Option<Strin
     (None, start)
 }
 
-fn parse_table_caption_marker(line: &str) -> Option<String> {
+fn parse_table_caption_marker(line: &str) -> Option<(String, Option<String>)> {
     let trimmed = line.trim();
 
     // 带编号的表格标记（"表1：标题" / "表 1.2 标题" / "表E.1：标题" / "Table 1: 标题"）。
@@ -169,7 +181,7 @@ fn parse_table_caption_marker(line: &str) -> Option<String> {
     if let Some(caps) = numbered.captures(trimmed) {
         let caption = strip_caption_number(caps[1].trim());
         if !caption.is_empty() {
-            return Some(caption);
+            return Some(strip_label_attr(&caption));
         }
     }
 
@@ -184,7 +196,25 @@ fn parse_table_caption_marker(line: &str) -> Option<String> {
     if caption.is_empty() {
         None
     } else {
-        Some(caption)
+        Some(strip_label_attr(&caption))
+    }
+}
+
+/// 剥除文本尾部的 `{#id}` 交叉引用锚点，返回 (剩余文本, label)。
+fn strip_label_attr(text: &str) -> (String, Option<String>) {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"\s*\{#([A-Za-z][\w:.-]*)\}\s*$").expect("invalid label attr regex")
+    });
+    match re.captures(text) {
+        Some(caps) => {
+            let m = caps.get(0).expect("label attr whole group");
+            (
+                text[..m.start()].trim_end().to_string(),
+                Some(caps[1].to_string()),
+            )
+        }
+        None => (text.to_string(), None),
     }
 }
 
@@ -581,5 +611,39 @@ mod tests {
             })
             .expect("language");
         assert_eq!(lang, "rust");
+    }
+
+    #[test]
+    fn heading_label_attr_becomes_label_block() {
+        let blocks = parse("## 第一章 概述 {#chap:overview}\n");
+        assert!(matches!(&blocks[0], Block::Label(id) if id == "chap:overview"));
+        assert!(matches!(&blocks[1], Block::Heading { level: 2, text } if text == "概述"));
+    }
+
+    #[test]
+    fn heading_without_label_attr_has_no_label_block() {
+        let blocks = parse("## 概述\n");
+        assert!(!blocks.iter().any(|b| matches!(b, Block::Label(_))));
+        assert!(matches!(&blocks[0], Block::Heading { text, .. } if text == "概述"));
+    }
+
+    #[test]
+    fn table_caption_label_attr_becomes_label_block() {
+        let md = "表：产品清单 {#tbl:products}\n\n| 列A | 列B |\n|---|---|\n| 1 | 2 |\n";
+        let blocks = parse(md);
+        let label_pos = blocks
+            .iter()
+            .position(|b| matches!(b, Block::Label(id) if id == "tbl:products"))
+            .expect("label block");
+        let table_pos = blocks
+            .iter()
+            .position(|b| matches!(b, Block::Table { .. }))
+            .expect("table");
+        assert!(label_pos < table_pos);
+        let caption = blocks.iter().find_map(|b| match b {
+            Block::Table { caption, .. } => caption.as_deref(),
+            _ => None,
+        });
+        assert_eq!(caption, Some("产品清单"));
     }
 }

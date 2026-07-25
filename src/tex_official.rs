@@ -49,6 +49,7 @@ pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
     };
 
     let mut blocks = parser::parse(&content);
+    crate::common::crossref::check_or_bail(&blocks, crate::common::crossref::Support::FiguresOnly)?;
     for (_, dst) in crate::common::images::relocate(&mut blocks, base_dir, out_dir) {
         println!("  图片已复制到 {}", dst.display());
     }
@@ -190,6 +191,10 @@ impl TexEmitter {
             Block::Marker(_) => {
                 // 公文路径不响应区段标记，原样忽略
             }
+            Block::Label(_) => {
+                // 公文标题无自动编号，章节锚点无意义；图片标签直接挂在
+                // Inline::Image 上，不经此块，故整体忽略
+            }
             Block::CodeBlock { .. } => {
                 // 公文路径暂不支持代码块
             }
@@ -250,8 +255,8 @@ impl TexEmitter {
 
     fn emit_paragraph(&mut self, inlines: &[Inline]) {
         // 独占一段的图片（允许前后有空白文本）输出为 figure 环境
-        if let Some((alt, url)) = sole_image(inlines) {
-            self.emit_figure(alt, url);
+        if let Some((alt, url, label)) = sole_image(inlines) {
+            self.emit_figure(alt, url, label);
             return;
         }
         let body = render_inlines(inlines);
@@ -262,7 +267,7 @@ impl TexEmitter {
         self.out.push_str("\\par\n\n");
     }
 
-    fn emit_figure(&mut self, alt: &str, url: &str) {
+    fn emit_figure(&mut self, alt: &str, url: &str, label: Option<&str>) {
         self.out.push_str("\\begin{figure}[htbp]\n\\centering\n");
         self.out.push_str(&format!(
             "\\includegraphics[width=\\textwidth]{{{}}}\n",
@@ -271,6 +276,10 @@ impl TexEmitter {
         if !alt.is_empty() {
             self.out
                 .push_str(&format!("\\caption{{{}}}\n", escape_latex(alt)));
+            // \label 必须跟在 \caption 之后，引用的才是图号
+            if let Some(lab) = label {
+                self.out.push_str(&format!("\\label{{{}}}\n", lab));
+            }
         }
         self.out.push_str("\\end{figure}\n\n");
     }
@@ -427,14 +436,14 @@ impl TexEmitter {
 
 // ========== 字符串工具 ==========
 
-/// 段落内容去掉纯空白 Text 后只剩一张图片时，返回其 (alt, url)。
-fn sole_image(inlines: &[Inline]) -> Option<(&str, &str)> {
+/// 段落内容去掉纯空白 Text 后只剩一张图片时，返回其 (alt, url, label)。
+fn sole_image(inlines: &[Inline]) -> Option<(&str, &str, Option<&str>)> {
     let meaningful: Vec<&Inline> = inlines
         .iter()
         .filter(|ip| !matches!(ip, Inline::Text(t) if t.trim().is_empty()))
         .collect();
     match meaningful.as_slice() {
-        [Inline::Image { alt, url }] => Some((alt, url)),
+        [Inline::Image { alt, url, label }] => Some((alt, url, label.as_deref())),
         _ => None,
     }
 }
@@ -470,6 +479,12 @@ fn render_inlines(inlines: &[Inline]) -> String {
             Inline::Image { url, .. } => {
                 s.push_str("\\includegraphics[width=\\textwidth]{");
                 s.push_str(&escape_href_url(url));
+                s.push('}');
+            }
+            // 交叉引用：公文中仅图片 label 有效，章节锚点会被忽略（\ref 显示 ??）
+            Inline::CrossRef(id) => {
+                s.push_str("\\ref{");
+                s.push_str(id);
                 s.push('}');
             }
             Inline::Footnote(t) => {
@@ -632,6 +647,7 @@ mod tests {
         e.emit_block(&Block::Paragraph(vec![Inline::Image {
             alt: "系统架构".into(),
             url: "figs/arch.png".into(),
+            label: Some("fig:arch".into()),
         }]));
         let body = test_body(e);
         assert!(body.contains("\\begin{figure}[htbp]"), "got {}", body);
@@ -642,6 +658,10 @@ mod tests {
             body
         );
         assert!(body.contains("\\caption{系统架构}"));
+        // \label 必须跟在 \caption 之后
+        let cap = body.find("\\caption{系统架构}").expect("caption");
+        let lab = body.find("\\label{fig:arch}").expect("label");
+        assert!(cap < lab, "got {}", body);
         assert!(body.contains("\\end{figure}"));
     }
 
@@ -651,6 +671,7 @@ mod tests {
         e.emit_block(&Block::Paragraph(vec![Inline::Image {
             alt: String::new(),
             url: "a.png".into(),
+            label: None,
         }]));
         let body = test_body(e);
         assert!(body.contains("\\includegraphics[width=\\textwidth]{a.png}"));
@@ -664,9 +685,19 @@ mod tests {
             Inline::Image {
                 alt: "图".into(),
                 url: "a.png".into(),
+                label: None,
             },
         ]);
         assert_eq!(rendered, "见\\includegraphics[width=\\textwidth]{a.png}");
+    }
+
+    #[test]
+    fn crossref_renders_ref() {
+        let rendered = render_inlines(&[
+            Inline::Text("见图".into()),
+            Inline::CrossRef("fig:arch".into()),
+        ]);
+        assert_eq!(rendered, "见图\\ref{fig:arch}");
     }
 
     #[test]

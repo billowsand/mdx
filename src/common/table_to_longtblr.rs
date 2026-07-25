@@ -281,6 +281,12 @@ fn cell_to_latex(cell: &str) -> String {
             Inline::Link { text, .. } => result.push_str(&escape_latex(&text)),
             // longtblr 单元格内不插图，降级为替代文本
             Inline::Image { alt, .. } => result.push_str(&escape_latex(&alt)),
+            // 单元格内交叉引用：\ref 在 longtblr 中可用，直接输出
+            Inline::CrossRef(id) => {
+                result.push_str("\\ref{");
+                result.push_str(&id);
+                result.push('}');
+            }
             // longtblr 单元格内 \footnote 不生效，降级为全角括号内联注释
             Inline::Footnote(t) => {
                 result.push_str("（");
@@ -311,7 +317,8 @@ fn process_row(cells: &[String], is_header: bool) -> String {
 
 /// 生成 longtblr 环境的完整代码
 /// 输入：表格行数据 Vec<Vec<String>>，第一行是表头
-pub fn emit_longtblr(rows: &[Vec<String>], caption: Option<&str>) -> String {
+/// `label` 为交叉引用锚点（tabularray 外层 `label=` 选项）；引用表格需同时提供 caption。
+pub fn emit_longtblr(rows: &[Vec<String>], caption: Option<&str>, label: Option<&str>) -> String {
     if rows.is_empty() {
         return String::new();
     }
@@ -353,19 +360,26 @@ pub fn emit_longtblr(rows: &[Vec<String>], caption: Option<&str>) -> String {
         ));
     }
 
-    // 生成 longtblr 开始标记
-    let longtblr_begin = if let Some(cap) = caption {
+    // 生成 longtblr 开始标记（外层选项按需含 caption 与 label）
+    let mut outer_opts = String::new();
+    if let Some(cap) = caption {
+        outer_opts.push_str(&format!("caption={{{}}}", cap));
+    }
+    if let Some(lab) = label {
+        if !outer_opts.is_empty() {
+            outer_opts.push_str(", ");
+        }
+        outer_opts.push_str(&format!("label={{{}}}", lab));
+    }
+    let longtblr_begin = if outer_opts.is_empty() {
         format!(
-            "{}\n\\begin{{longtblr}}[caption={{{}}}]{{\n  colspec = {{{}}},\n  rowhead = 1,\n  hlines,\n  vlines,\n  row{{1}} = {{c, font=\\heiti}},\n}}",
-            debug_info,
-            cap,
-            colspec
+            "{}\n\\begin{{longtblr}}{{\n  colspec = {{{}}},\n  rowhead = 1,\n  hlines,\n  vlines,\n  row{{1}} = {{c, font=\\heiti}},\n}}",
+            debug_info, colspec
         )
     } else {
         format!(
-            "{}\n\\begin{{longtblr}}{{\n  colspec = {{{}}},\n  rowhead = 1,\n  hlines,\n  vlines,\n  row{{1}} = {{c, font=\\heiti}},\n}}",
-            debug_info,
-            colspec
+            "{}\n\\begin{{longtblr}}[{}]{{\n  colspec = {{{}}},\n  rowhead = 1,\n  hlines,\n  vlines,\n  row{{1}} = {{c, font=\\heiti}},\n}}",
+            debug_info, outer_opts, colspec
         )
     };
 
@@ -391,7 +405,7 @@ pub fn table_block_to_longtblr(block: &Block, caption: Option<&str>) -> String {
         Block::Table {
             rows,
             caption: block_caption,
-        } => emit_longtblr(rows, caption.or(block_caption.as_deref())),
+        } => emit_longtblr(rows, caption.or(block_caption.as_deref()), None),
         _ => String::new(),
     }
 }
@@ -433,9 +447,20 @@ mod tests {
             vec!["1".to_string(), "2".to_string(), "文本内容".to_string()],
             vec!["3".to_string(), "4".to_string(), "更多文本".to_string()],
         ];
-        let result = emit_longtblr(&rows, Some("测试表格"));
+        let result = emit_longtblr(&rows, Some("测试表格"), None);
         assert!(result.contains("\\begin{longtblr}"));
         assert!(result.contains("\\end{longtblr}"));
         assert!(result.contains("caption={测试表格}"));
+        assert!(!result.contains("label="));
+    }
+
+    #[test]
+    fn test_longtblr_with_label() {
+        let rows = vec![
+            vec!["列A".to_string()],
+            vec!["1".to_string()],
+        ];
+        let result = emit_longtblr(&rows, Some("测试表格"), Some("tbl:products"));
+        assert!(result.contains("caption={测试表格}, label={tbl:products}"), "{result}");
     }
 }
