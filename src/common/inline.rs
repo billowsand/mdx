@@ -12,11 +12,24 @@ use std::sync::OnceLock;
 
 use super::ast::Inline;
 
+/// 行内构造统一匹配层：代码、链接/图片、强调、交叉引用、文献引用同处一层。
+///
+/// 关键在于它们的起始字符互不相同（`` ` `` / `[` / `!` / `*` / `{`），因此
+/// `find_iter` 的“最左、非重叠”语义天然给出正确优先级：谁先起始谁整体胜出，
+/// 被包住的内部构造再由强调的递归解析处理。这样：
+/// - `` `a*b*c` `` 整段是代码（`` ` `` 起始最靠左），内部 `*` 不成强调；
+/// - `**加粗 `代码` 与 [链接](u) 与 {@ref} 与 [@cite]**` 里强调整体先匹配、
+///   再递归进代码/链接/交叉引用/引用；
+/// - `[**粗**](u)` 里链接整体先匹配，链接文字原样保留（与历史行为一致）。
+///
+/// 唯一留在更高层的是脚注（见 [`parse`]）：脚注不能被强调包裹（既有限制）。
+/// `[` 起始的链接与引用是两个候选，链接需 `](...)` 结构、引用需 `[@...]`，
+/// 二者实际不会匹配同一段；命中后再按 [`link_matcher`] 复核区分。
 fn inline_matcher() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(`[^`]+`|\[(?:@[^\s@;,\[\]{}\\]+)(?:\s*;\s*@[^\s@;,\[\]{}\\]+)*\]|\*\*[^*]+\*\*|\*[^*]+\*)",
+            r"`[^`]+`|!?\[[^\]]*\]\([^)]+\)|\*\*[^*]+\*\*|\*[^*]+\*|\{@[A-Za-z][\w:.-]*\}|\[(?:@[^\s@;,\[\]{}\\]+)(?:\s*;\s*@[^\s@;,\[\]{}\\]+)*\]",
         )
         .expect("invalid inline regex")
     })
@@ -37,12 +50,6 @@ fn footnote_matcher() -> &'static Regex {
     })
 }
 
-/// 交叉引用：`{@id}`，id 为字母开头的 LaTeX label 合法字符序列。
-fn crossref_matcher() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\{@([A-Za-z][\w:.-]*)\}").expect("invalid crossref regex"))
-}
-
 /// 图片标签属性：紧跟 `![alt](url)` 之后的 `{#id}`（锚定匹配，用于向前窥探）。
 fn label_attr_matcher() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -51,20 +58,23 @@ fn label_attr_matcher() -> &'static Regex {
 
 /// 把一段已正规化引号的纯文本拆成 Inline 列表。
 ///
+/// 分两层：脚注在最外层先切出（内容原样、不嵌套，故脚注不能被强调包裹——既有
+/// 限制）；其余文本交给 [`parse_inline`]，在同一层内统一处理代码 / 链接 / 图片 /
+/// 强调 / 交叉引用 / 文献引用，强调内部递归回本函数以支持任意合法嵌套。
+///
 /// 空字符串返回空向量。
 pub fn parse(text: &str) -> Vec<Inline> {
     if text.is_empty() {
         return Vec::new();
     }
 
-    // 最优先处理行内脚注（脚注不嵌套）
     let mut out = Vec::new();
     let footnote_re = footnote_matcher();
     let mut last_end = 0;
 
     for m in footnote_re.find_iter(text) {
         if m.start() > last_end {
-            out.extend(parse_with_crossrefs(&text[last_end..m.start()]));
+            out.extend(parse_inline(&text[last_end..m.start()]));
         }
         let caps = footnote_re
             .captures(m.as_str())
@@ -79,134 +89,80 @@ pub fn parse(text: &str) -> Vec<Inline> {
     }
 
     if last_end < text.len() {
-        out.extend(parse_with_crossrefs(&text[last_end..]));
+        out.extend(parse_inline(&text[last_end..]));
     }
 
     out
 }
 
-/// 处理不含脚注的文本：先切出 `{@id}` 交叉引用，其余交给链接/图片/格式解析
-fn parse_with_crossrefs(text: &str) -> Vec<Inline> {
+/// 统一行内层：代码 / 链接 / 图片 / 强调 / 交叉引用 / 文献引用同处一层，靠
+/// [`inline_matcher`] 的最左非重叠匹配定优先级。用 `find_at` 从游标推进，以便
+/// 图片可以额外吞掉紧随其后的 `{#id}` 锚点。强调命中后对内部递归调用 [`parse`]。
+fn parse_inline(text: &str) -> Vec<Inline> {
     if text.is_empty() {
         return Vec::new();
     }
 
-    let mut out = Vec::new();
-    let crossref_re = crossref_matcher();
-    let mut last_end = 0;
-
-    for caps in crossref_re.captures_iter(text) {
-        let m = caps.get(0).expect("crossref match without whole group");
-        if m.start() > last_end {
-            out.extend(parse_with_links(&text[last_end..m.start()]));
-        }
-        out.push(Inline::CrossRef(caps[1].to_string()));
-        last_end = m.end();
-    }
-
-    if last_end < text.len() {
-        out.extend(parse_with_links(&text[last_end..]));
-    }
-
-    out
-}
-
-/// 处理不含脚注的文本（优先链接，其次加粗/斜体/代码）
-fn parse_with_links(text: &str) -> Vec<Inline> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-
-    // 优先处理链接与图片（不嵌套）；以 `!` 开头的匹配为图片
-    let mut out = Vec::new();
-    let link_re = link_matcher();
-    let mut last_end = 0;
-
-    for caps in link_re.captures_iter(text) {
-        let m = caps.get(0).expect("link match without whole group");
-        if m.start() > last_end {
-            // 处理链接之前的部分
-            let before = &text[last_end..m.start()];
-            let inlines = parse_no_links(before);
-            out.extend(inlines);
-        }
-        let label_text = caps[1].to_string();
-        let url = caps[2].to_string();
-        if m.as_str().starts_with('!') {
-            // 图片后紧跟的 `{#id}` 是交叉引用锚点，一并消费
-            let mut label = None;
-            if let Some(attr) = label_attr_matcher().captures(&text[m.end()..]) {
-                label = Some(attr[1].to_string());
-                last_end = m.end() + attr.get(0).expect("attr whole group").end();
-            } else {
-                last_end = m.end();
-            }
-            out.push(Inline::Image {
-                alt: label_text,
-                url,
-                label,
-            });
-        } else {
-            out.push(Inline::Link {
-                text: label_text,
-                url,
-            });
-            last_end = m.end();
-        }
-    }
-
-    if last_end < text.len() {
-        let remaining = &text[last_end..];
-        let inlines = parse_no_links(remaining);
-        out.extend(inlines);
-    }
-
-    out
-}
-
-/// 解析不含链接的文本（处理加粗、斜体、代码）
-fn parse_no_links(text: &str) -> Vec<Inline> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
     let re = inline_matcher();
-    let mut last_end = 0;
+    let mut out = Vec::new();
+    let mut pos = 0;
 
-    for m in re.find_iter(text) {
-        if m.start() > last_end {
-            out.push(Inline::Text(text[last_end..m.start()].to_string()));
+    while let Some(m) = re.find_at(text, pos) {
+        if m.start() > pos {
+            out.push(Inline::Text(text[pos..m.start()].to_string()));
         }
         let part = m.as_str();
-        if part.starts_with("**") && part.ends_with("**") && part.len() >= 4 {
-            // 递归解析内部：加粗里允许再次出现引用 / 脚注 / 嵌套格式
-            let inner = &part[2..part.len() - 2];
-            out.push(Inline::Bold(parse(inner)));
-        } else if part.starts_with('*')
-            && part.ends_with('*')
-            && part.len() >= 2
-            && !part.starts_with("**")
-        {
-            let inner = &part[1..part.len() - 1];
-            out.push(Inline::Italic(parse(inner)));
-        } else if part.starts_with('`') && part.ends_with('`') && part.len() >= 2 {
-            // inline code 不再解析（保留原样），与代码块行为一致
-            out.push(Inline::Code(part[1..part.len() - 1].to_string()));
-        } else if part.starts_with('[') && part.ends_with(']') {
-            let keys = part[1..part.len() - 1]
-                .split(';')
-                .map(|item| item.trim().trim_start_matches('@').to_string())
-                .collect();
-            out.push(Inline::Citation(keys));
-        } else {
-            out.push(Inline::Text(part.to_string()));
+        pos = m.end();
+        match part.as_bytes()[0] {
+            // 行内代码：内容原样。
+            b'`' => out.push(Inline::Code(part[1..part.len() - 1].to_string())),
+            // 强调：内部递归解析，允许再嵌代码 / 链接 / 交叉引用 / 引用。
+            b'*' => {
+                if part.starts_with("**") {
+                    out.push(Inline::Bold(parse(&part[2..part.len() - 2])));
+                } else {
+                    out.push(Inline::Italic(parse(&part[1..part.len() - 1])));
+                }
+            }
+            // 交叉引用 `{@id}`：剥掉 `{@` 与 `}`。
+            b'{' => out.push(Inline::CrossRef(part[2..part.len() - 1].to_string())),
+            // 图片 `![alt](url)`，并吞掉紧随其后的 `{#id}` 锚点。
+            b'!' => {
+                let caps = link_matcher()
+                    .captures(part)
+                    .expect("image match without captures");
+                let alt = caps[1].to_string();
+                let url = caps[2].to_string();
+                let mut label = None;
+                if let Some(attr) = label_attr_matcher().captures(&text[pos..]) {
+                    label = Some(attr[1].to_string());
+                    pos += attr.get(0).expect("attr whole group").end();
+                }
+                out.push(Inline::Image { alt, url, label });
+            }
+            // `[` 起始：有 `](...)` 结构的是链接（文字原样），否则按文献引用解析。
+            b'[' => {
+                if let Some(caps) = link_matcher().captures(part) {
+                    out.push(Inline::Link {
+                        text: caps[1].to_string(),
+                        url: caps[2].to_string(),
+                    });
+                } else {
+                    let keys = part[1..part.len() - 1]
+                        .split(';')
+                        .map(|item| item.trim().trim_start_matches('@').to_string())
+                        .collect();
+                    out.push(Inline::Citation(keys));
+                }
+            }
+            _ => out.push(Inline::Text(part.to_string())),
         }
-        last_end = m.end();
     }
 
-    if last_end < text.len() {
-        out.push(Inline::Text(text[last_end..].to_string()));
+    if pos < text.len() {
+        out.push(Inline::Text(text[pos..].to_string()));
     }
+
     out
 }
 
@@ -436,6 +392,63 @@ mod tests {
         // 斜体内部如果出现裸文本（无内嵌格式），整段被识别为 Italic
         let inlines = parse("*整段斜体*");
         assert_eq!(inlines, vec![Inline::Italic(vec![Inline::Text("整段斜体".into())])]);
+    }
+
+    #[test]
+    fn emphasis_wraps_link_crossref_and_citation() {
+        // 强调里包住链接、交叉引用、引用都应保留强调外壳并正确解析内部。
+        assert_eq!(
+            parse("**加粗 [文档](https://x) 尾**"),
+            vec![Inline::Bold(vec![
+                Inline::Text("加粗 ".into()),
+                Inline::Link {
+                    text: "文档".into(),
+                    url: "https://x".into(),
+                },
+                Inline::Text(" 尾".into()),
+            ])]
+        );
+        assert_eq!(
+            parse("*斜体 {@fig:arch} 尾*"),
+            vec![Inline::Italic(vec![
+                Inline::Text("斜体 ".into()),
+                Inline::CrossRef("fig:arch".into()),
+                Inline::Text(" 尾".into()),
+            ])]
+        );
+        assert_eq!(
+            parse("**结论 [@a; @b]**"),
+            vec![Inline::Bold(vec![
+                Inline::Text("结论 ".into()),
+                Inline::Citation(vec!["a".into(), "b".into()]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn link_text_with_emphasis_markers_stays_a_link() {
+        // 链接文字里的 `**` 不拆强调：链接整体先匹配，文字原样保留。
+        assert_eq!(
+            parse("[**粗**](https://x)"),
+            vec![Inline::Link {
+                text: "**粗**".into(),
+                url: "https://x".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn code_span_with_asterisks_is_not_emphasized() {
+        // 行内代码优先级最高：内部的 `*` 不被当作强调。
+        assert_eq!(parse("`a*b*c`"), vec![Inline::Code("a*b*c".into())]);
+        assert_eq!(
+            parse("前 `x**y**z` 后"),
+            vec![
+                Inline::Text("前 ".into()),
+                Inline::Code("x**y**z".into()),
+                Inline::Text(" 后".into()),
+            ]
+        );
     }
 
     #[test]
