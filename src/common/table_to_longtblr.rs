@@ -287,6 +287,11 @@ fn cell_to_latex(cell: &str) -> String {
                 result.push_str(&id);
                 result.push('}');
             }
+            Inline::Citation(keys) => {
+                result.push_str("\\cite{");
+                result.push_str(&keys.join(","));
+                result.push('}');
+            }
             // longtblr 单元格内 \footnote 不生效，降级为全角括号内联注释
             Inline::Footnote(t) => {
                 result.push_str("（");
@@ -456,11 +461,17 @@ mod tests {
 
     #[test]
     fn test_longtblr_with_label() {
-        let rows = vec![
-            vec!["列A".to_string()],
-            vec!["1".to_string()],
-        ];
+        let rows = vec![vec!["列A".to_string()], vec!["1".to_string()]];
         let result = emit_longtblr(&rows, Some("测试表格"), Some("tbl:products"));
-        assert!(result.contains("caption={测试表格}, label={tbl:products}"), "{result}");
+        assert!(
+            result.contains("caption={测试表格}, label={tbl:products}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn table_cell_renders_citation() {
+        let tex = emit_longtblr(&[vec!["文献".into()], vec!["[@a; @b]".into()]], None, None);
+        assert!(tex.contains("\\cite{a,b}"), "{tex}");
     }
 }

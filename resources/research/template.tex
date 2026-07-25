@@ -1,10 +1,12 @@
 %!TEX program = xelatex
 \documentclass{md2tex}
 
-% 参考文献设置（保留在主文件，便于后处理自动移除）
+% 参考文献设置（仅正文存在 citation 时保留）
+$if(bibliography)$
 \usepackage[style=gb7714-2015]{biblatex}
 \addbibresource{references.bib}
 \renewcommand{\bibname}{参考文献}
+$endif$
 
 % 论文封面信息
 $if(title)$
@@ -88,7 +90,8 @@ $endif$
 $body$
 
 % 参考文献
-\nocite{*}
+$if(bibliography)$
 \printbibliography
+$endif$
 
 \end{document}

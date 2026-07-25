@@ -1,6 +1,6 @@
 [package]
 name = "mdx"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 authors = ["marmot"]
 description = "Unified markdown converter: docx/tex × official/research"
@@ -14,6 +14,7 @@ clap = { version = "4", features = ["derive"] }
 docx-rs = "0.4"
 regex = "1"
 anyhow = "1"
+biblatex = "0.12"
 walkdir = "2"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

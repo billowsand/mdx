@@ -601,6 +601,15 @@ mod tests {
     }
 
     #[test]
+    fn fenced_code_does_not_create_citations() {
+        let blocks = parse("```text\n[@key]\n```\n");
+        assert!(matches!(
+            &blocks[0],
+            Block::CodeBlock { content, .. } if content == "[@key]"
+        ));
+    }
+
+    #[test]
     fn code_block_uses_first_info_word_as_language() {
         let blocks = parse("```rust {#id}\nfn main() {}\n```\n");
         let lang = blocks

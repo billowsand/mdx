@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+use crate::common::front_matter::{self, Metadata};
 use crate::parser;
 use crate::tex_research_emitter::TexResearchEmitter;
 
@@ -16,20 +17,7 @@ pub struct Merger {
     _placeholder: (),
 }
 
-/// 封面字段：来自 markdown 顶部 front matter（`---` 包围的 `键: 值` 行）。
-///
-/// 支持的键（冒号可为中英文）：密级 / 文件类型 / 文件编号 / 文件版本号（或 版本）/
-/// 撰写单位（或 单位）/ 撰写时间（或 时间、日期）/ 文件名称（或 标题）。
-#[derive(Debug, Default, Clone)]
-pub struct CoverInfo {
-    pub security: Option<String>,
-    pub doc_type: Option<String>,
-    pub doc_number: Option<String>,
-    pub version: Option<String>,
-    pub institution: Option<String>,
-    pub date: Option<String>,
-    pub title: Option<String>,
-}
+type CoverInfo = Metadata;
 
 impl Merger {
     pub fn new() -> Self {
@@ -44,11 +32,7 @@ impl Merger {
         user_template: Option<&Path>,
         output_tex: &Path,
     ) -> Result<()> {
-        // 1. 提取嵌入资源
-        resources::extract(output_tex.parent().unwrap_or(Path::new(".")))
-            .context("释放嵌入资源失败")?;
-
-        // 2. 读取并解析 markdown
+        // 1. 读取并解析 markdown
         let (markdown_content, doc_title) = if is_dir {
             self.merge_markdown_files(input)?
         } else {
@@ -56,22 +40,29 @@ impl Merger {
         };
 
         // 2.5 剥离 front matter 封面字段（标题可被 front matter 覆盖）
-        let (cover, markdown_content) = parse_front_matter(&markdown_content);
+        let (cover, markdown_content) = front_matter::parse(&markdown_content);
         let doc_title = cover.title.clone().or(doc_title);
 
         println!("正在解析 markdown...");
         let mut blocks = parser::parse(&markdown_content);
 
-        // 交叉引用检查：锚点缺失/重复/不生效即停止转换
-        crate::common::crossref::check_or_bail(&blocks, crate::common::crossref::Support::Full)?;
-
-        // 图片：复制到输出目录 figures/ 并改写引用路径
-        let out_dir = output_tex.parent().unwrap_or(Path::new("."));
         let base_dir = if is_dir {
             input
         } else {
             input.parent().unwrap_or(Path::new("."))
         };
+        let citations =
+            crate::common::citation::validate(&blocks, cover.bibliography.as_deref(), base_dir)?;
+
+        // 所有引用检查均在创建输出目录之前完成
+        crate::common::crossref::check_or_bail(&blocks, crate::common::crossref::Support::Full)?;
+
+        // 2. 校验完成后才能释放资源、复制 Bib 与图片
+        let out_dir = output_tex.parent().unwrap_or(Path::new("."));
+        resources::extract(out_dir).context("释放嵌入资源失败")?;
+        if let Some(path) = citations.copy_to(out_dir)? {
+            println!("  Bib 文件已复制到 {}", path.display());
+        }
         for (_, dst) in crate::common::images::relocate(&mut blocks, base_dir, out_dir) {
             println!("  图片已复制到 {}", dst.display());
         }
@@ -92,8 +83,14 @@ impl Merger {
         } else {
             resources::TEMPLATE_TEX.to_string()
         };
-        let mut tex = render_template(&template, &body, doc_title.as_deref(), &cover);
-        tex = fix_biblatex(&tex, output_tex);
+        let tex = render_template(
+            &template,
+            &body,
+            doc_title.as_deref(),
+            &cover,
+            citations.has_citations,
+        );
+        let tex = configure_biblatex(&tex, citations.has_citations);
 
         // 5. 写入输出文件（主文件 + data/ 与 appendix/ 分章部件）
         fs::write(output_tex, &tex)
@@ -233,54 +230,6 @@ fn remove_first_h1(content: &str) -> String {
     }
 }
 
-/// 解析 markdown 顶部的 front matter（`---` 包围的 `键: 值` 行），返回封面字段
-/// 与剥离后的正文内容。首行不是 `---` 时原样返回。
-fn parse_front_matter(content: &str) -> (CoverInfo, String) {
-    let mut lines = content.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return (CoverInfo::default(), content.to_string());
-    }
-
-    let mut cover = CoverInfo::default();
-    let mut end = 1; // 已消费行数（含起始 ---）
-    let mut closed = false;
-    for line in lines {
-        end += 1;
-        let trimmed = line.trim();
-        if trimmed == "---" {
-            closed = true;
-            break;
-        }
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = trimmed.split_once([':', '：']) {
-            let value = value.trim();
-            if value.is_empty() {
-                continue;
-            }
-            match key.trim() {
-                "密级" | "security" => cover.security = Some(value.to_string()),
-                "文件类型" | "类型" | "doctype" => cover.doc_type = Some(value.to_string()),
-                "文件编号" | "编号" | "number" => cover.doc_number = Some(value.to_string()),
-                "文件版本号" | "版本" | "version" => cover.version = Some(value.to_string()),
-                "撰写单位" | "单位" | "institution" => cover.institution = Some(value.to_string()),
-                "撰写时间" | "时间" | "日期" | "date" => cover.date = Some(value.to_string()),
-                "文件名称" | "标题" | "title" => cover.title = Some(value.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    if !closed {
-        // 没有闭合的 ---，不是 front matter，原样返回
-        return (CoverInfo::default(), content.to_string());
-    }
-
-    let remaining = content.lines().skip(end).collect::<Vec<_>>().join("\n");
-    (cover, remaining)
-}
-
 /// 撰写时间归一化为"YYYY 年 M 月"（接受 2026-07 / 2026/7 / 2026.07 / 2026年7月）。
 fn normalize_cover_date(raw: &str) -> String {
     if let Ok(re) = regex::Regex::new(r"^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*月?$") {
@@ -298,7 +247,13 @@ fn normalize_cover_date(raw: &str) -> String {
 /// 使用到的 `$body$`、`$title$`、`$if(title)$...$else$...$endif$`，以及封面字段
 /// `$security$` / `$doctype$` / `$docnumber$` / `$docversion$` / `$institution$` /
 /// `$submitdate$`。
-fn render_template(template: &str, body: &str, title: Option<&str>, cover: &CoverInfo) -> String {
+fn render_template(
+    template: &str,
+    body: &str,
+    title: Option<&str>,
+    cover: &CoverInfo,
+    has_citations: bool,
+) -> String {
     let escaped_title = title.map(escape_latex);
     let mut rendered = template.to_string();
 
@@ -314,9 +269,23 @@ fn render_template(template: &str, body: &str, title: Option<&str>, cover: &Cove
             .to_string();
     }
 
+    if let Ok(re) = regex::Regex::new(r"(?s)\$if\(bibliography\)\$(.*?)\$endif\$") {
+        rendered = re
+            .replace_all(&rendered, |caps: &regex::Captures| {
+                if has_citations {
+                    caps.get(1).map(|m| m.as_str()).unwrap_or("").to_string()
+                } else {
+                    String::new()
+                }
+            })
+            .to_string();
+    }
+
     // 封面字段：缺省值与旧版模板保持一致；日期缺省用 LaTeX 当前年月（到月）
     let field = |value: Option<&String>, default: &str| {
-        value.map(|v| escape_latex(v)).unwrap_or_else(|| default.to_string())
+        value
+            .map(|v| escape_latex(v))
+            .unwrap_or_else(|| default.to_string())
     };
     let date = cover
         .date
@@ -330,7 +299,10 @@ fn render_template(template: &str, body: &str, title: Option<&str>, cover: &Cove
     rendered = rendered.replace("$doctype$", &field(cover.doc_type.as_ref(), "研究报告"));
     rendered = rendered.replace("$docnumber$", &field(cover.doc_number.as_ref(), ""));
     rendered = rendered.replace("$docversion$", &field(cover.version.as_ref(), "V1.0"));
-    rendered = rendered.replace("$institution$", &field(cover.institution.as_ref(), "某某单位"));
+    rendered = rendered.replace(
+        "$institution$",
+        &field(cover.institution.as_ref(), "某某单位"),
+    );
     rendered = rendered.replace("$submitdate$", &date);
     rendered
 }
@@ -355,41 +327,23 @@ fn escape_latex(s: &str) -> String {
     out
 }
 
-fn fix_biblatex(content: &str, tex_file: &Path) -> String {
-    let tex_dir = tex_file.parent().unwrap_or(Path::new("."));
-    let bib_file = tex_dir.join("references.bib");
-
-    let bib_valid = fs::read_to_string(&bib_file)
-        .map(|c| {
-            let stripped = c
-                .lines()
-                .map(|line| line.split('%').next().unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n");
-            stripped.trim().len() >= 10
-        })
-        .unwrap_or(false);
-
-    if bib_valid {
-        return content.to_string();
+fn configure_biblatex(content: &str, enabled: bool) -> String {
+    let mut result = content.to_string();
+    let nocite = regex::Regex::new(r"\\nocite\{\*\}").expect("invalid nocite cleanup pattern");
+    result = nocite.replace_all(&result, "").to_string();
+    if enabled {
+        return result;
     }
 
-    println!("  references.bib 为空/缺失，移除 biblatex 配置");
-
-    let mut result = content.to_string();
-    let patterns = [
-        r"\\usepackage\[[^\]]*?style=gb7714-2015[^\]]*?\]\{biblatex\}\s*\n?",
+    for pattern in [
         r"\\usepackage\[[^\]]*?\]\{biblatex\}\s*\n?",
         r"\\usepackage\{biblatex\}\s*\n?",
         r"\\addbibresource\{[^}]*\}\s*%?.*\n?",
-        r"\\nocite\{\*\}\s*%?.*\n?",
+        r"\\renewcommand\{\\bibname\}\{[^}]*\}\s*\n?",
         r"\\printbibliography\s*\n?",
-    ];
-
-    for pattern in patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            result = re.replace_all(&result, "").to_string();
-        }
+    ] {
+        let re = regex::Regex::new(pattern).expect("invalid biblatex cleanup pattern");
+        result = re.replace_all(&result, "").to_string();
     }
 
     result
@@ -403,15 +357,71 @@ mod tests {
     #[test]
     fn template_renders_title_and_body() {
         let template = "$if(title)$T:$title$$else$UNTITLED$endif$\n$body$";
-        let rendered = render_template(template, "BODY", Some("A&B"), &CoverInfo::default());
+        let rendered = render_template(template, "BODY", Some("A&B"), &CoverInfo::default(), false);
         assert_eq!(rendered, "T:A\\&B\nBODY");
     }
 
     #[test]
     fn template_uses_else_without_title() {
         let template = "$if(title)$T:$title$$else$UNTITLED$endif$\n$body$";
-        let rendered = render_template(template, "BODY", None, &CoverInfo::default());
+        let rendered = render_template(template, "BODY", None, &CoverInfo::default(), false);
         assert_eq!(rendered, "UNTITLED\nBODY");
+    }
+
+    #[test]
+    fn template_conditionally_renders_bibliography() {
+        let template = "$if(bibliography)$BIB$endif$\n$body$";
+        assert_eq!(
+            render_template(template, "BODY", None, &CoverInfo::default(), true),
+            "BIB\nBODY"
+        );
+        assert_eq!(
+            render_template(template, "BODY", None, &CoverInfo::default(), false),
+            "\nBODY"
+        );
+    }
+
+    #[test]
+    fn validation_failure_does_not_create_research_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("paper.md");
+        let output = dir.path().join("out/report.tex");
+        fs::write(
+            &input,
+            "---\nbibliography: missing.bib\n---\n# 标题\n正文 [@a]\n",
+        )
+        .unwrap();
+
+        let err = Merger::new()
+            .process(&input, false, None, &output)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("missing.bib"));
+        assert!(!output.exists());
+        assert!(!output.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn configure_biblatex_removes_nocite_and_disabled_setup() {
+        let input = "\\usepackage[style=gb7714-2015]{biblatex}\n\\addbibresource{references.bib}\n\\nocite{*}\n\\printbibliography\n";
+        let enabled = configure_biblatex(input, true);
+        assert!(enabled.contains("biblatex"));
+        assert!(enabled.contains("printbibliography"));
+        assert!(!enabled.contains("nocite"));
+
+        let disabled = configure_biblatex(input, false);
+        assert!(!disabled.contains("biblatex"));
+        assert!(!disabled.contains("addbibresource"));
+        assert!(!disabled.contains("printbibliography"));
+        assert!(!disabled.contains("nocite"));
+    }
+
+    #[test]
+    fn configure_biblatex_removes_inline_nocite() {
+        let input = "\\AtBeginDocument{\\nocite{*}}\n";
+        let configured = configure_biblatex(input, true);
+        assert!(!configured.contains("\\nocite{*}"), "{configured}");
+        assert_eq!(configured, "\\AtBeginDocument{}\n");
     }
 
     #[test]
@@ -425,15 +435,19 @@ mod tests {
             institution: Some("某研究所".into()),
             date: Some("2026-07".into()),
             title: None,
+            bibliography: None,
         };
-        let rendered = render_template(template, "", None, &cover);
-        assert_eq!(rendered, "内部|技术报告|XX-2026-001|V2.1|某研究所|2026 年 7 月");
+        let rendered = render_template(template, "", None, &cover, false);
+        assert_eq!(
+            rendered,
+            "内部|技术报告|XX-2026-001|V2.1|某研究所|2026 年 7 月"
+        );
     }
 
     #[test]
     fn template_cover_defaults() {
         let template = "$security$|$doctype$|$docnumber$|$docversion$|$institution$|$submitdate$";
-        let rendered = render_template(template, "", None, &CoverInfo::default());
+        let rendered = render_template(template, "", None, &CoverInfo::default(), false);
         assert_eq!(
             rendered,
             r"公开|研究报告||V1.0|某某单位|\the\year 年 \the\month 月"
@@ -443,7 +457,7 @@ mod tests {
     #[test]
     fn parses_front_matter_cover_fields() {
         let md = "---\n密级: 内部\n文件类型：技术报告\n文件编号: XX-2026-001\n版本: V2.1\n撰写单位: 某研究所\n撰写时间: 2026-07\n---\n\n# 标题\n\n正文\n";
-        let (cover, body) = parse_front_matter(md);
+        let (cover, body) = front_matter::parse(md);
         assert_eq!(cover.security.as_deref(), Some("内部"));
         assert_eq!(cover.doc_type.as_deref(), Some("技术报告"));
         assert_eq!(cover.doc_number.as_deref(), Some("XX-2026-001"));
@@ -457,7 +471,7 @@ mod tests {
     #[test]
     fn unclosed_front_matter_left_untouched() {
         let md = "---\n密级: 内部\n\n正文\n";
-        let (cover, body) = parse_front_matter(md);
+        let (cover, body) = front_matter::parse(md);
         assert!(cover.security.is_none());
         assert_eq!(body, md);
     }
@@ -503,41 +517,5 @@ mod tests {
 
         assert!(body.contains("\\chapter{感知类研制任务}"), "{body}");
         assert!(!body.contains("\\#\\# 第三章"), "{body}");
-    }
-
-    #[test]
-    fn removes_biblatex_when_references_missing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let tex_file = dir.path().join("out.tex");
-        let content = r#"\usepackage[style=gb7714-2015]{biblatex}
-\addbibresource{references.bib}
-\begin{document}
-Body
-\nocite{*}
-\printbibliography
-\end{document}
-"#;
-
-        let fixed = fix_biblatex(content, &tex_file);
-        assert!(!fixed.contains("biblatex"));
-        assert!(!fixed.contains("addbibresource"));
-        assert!(!fixed.contains("printbibliography"));
-        assert!(fixed.contains("Body"));
-    }
-
-    #[test]
-    fn keeps_biblatex_when_references_exist() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(
-            dir.path().join("references.bib"),
-            "@article{a,\n  title={A},\n}\n",
-        )
-        .unwrap();
-        let tex_file = dir.path().join("out.tex");
-        let content = "\\usepackage[style=gb7714-2015]{biblatex}\n\\printbibliography\n";
-
-        let fixed = fix_biblatex(content, &tex_file);
-        assert!(fixed.contains("biblatex"));
-        assert!(fixed.contains("printbibliography"));
     }
 }

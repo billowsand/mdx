@@ -34,22 +34,31 @@ const CIRCLE_NUMBERS_2: &[&str] = &[
 /// `figures/` 下的图片（markdown 引用的本地图片复制至此并改写路径）。
 pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
     let kind = crate::input::classify(input)?;
-    let content = crate::input::collect(input)?;
+    let raw = crate::input::collect_raw(input)?;
+    let (metadata, content) = crate::common::front_matter::parse(&raw);
+    let content = crate::input::strip_horizontal_rules(&content);
     let output_path = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| crate::input::default_output(input, "tex"));
 
     println!("正在转换: {}", input.display());
 
-    let out_dir = output_path.parent().unwrap_or(Path::new("."));
-    fs::create_dir_all(out_dir).with_context(|| format!("创建输出目录 {} 失败", out_dir.display()))?;
     let base_dir = match kind {
         crate::input::InputKind::Directory => input,
         crate::input::InputKind::File => input.parent().unwrap_or(Path::new(".")),
     };
 
     let mut blocks = parser::parse(&content);
+    let citations =
+        crate::common::citation::validate(&blocks, metadata.bibliography.as_deref(), base_dir)?;
     crate::common::crossref::check_or_bail(&blocks, crate::common::crossref::Support::FiguresOnly)?;
+
+    let out_dir = output_path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("创建输出目录 {} 失败", out_dir.display()))?;
+    if let Some(path) = citations.copy_to(out_dir)? {
+        println!("  Bib 文件已复制到 {}", path.display());
+    }
     for (_, dst) in crate::common::images::relocate(&mut blocks, base_dir, out_dir) {
         println!("  图片已复制到 {}", dst.display());
     }
@@ -58,7 +67,7 @@ pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
     emitter.emit_all(&blocks);
 
     let (body, parts) = emitter.finish();
-    let tex = wrap_document(&body);
+    let tex = wrap_document(&body, citations.has_citations);
 
     fs::write(&output_path, tex).with_context(|| format!("写入 {} 失败", output_path.display()))?;
     crate::common::parts::write_parts(out_dir, &parts)
@@ -75,13 +84,21 @@ pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn wrap_document(body: &str) -> String {
+fn wrap_document(body: &str, has_citations: bool) -> String {
     let mut s = String::new();
-    s.push_str("\\documentclass{official}\n\n");
+    s.push_str("\\documentclass{official}\n");
+    if has_citations {
+        s.push_str("\\usepackage[style=gb7714-2015]{biblatex}\n");
+        s.push_str("\\addbibresource{references.bib}\n");
+    }
+    s.push('\n');
     s.push_str("\\begin{document}\n\n");
     s.push_str(body);
     if !body.ends_with('\n') {
         s.push('\n');
+    }
+    if has_citations {
+        s.push_str("\n\\printbibliography\n");
     }
     s.push_str("\n\\end{document}\n");
     s
@@ -487,6 +504,11 @@ fn render_inlines(inlines: &[Inline]) -> String {
                 s.push_str(id);
                 s.push('}');
             }
+            Inline::Citation(keys) => {
+                s.push_str("\\cite{");
+                s.push_str(&keys.join(","));
+                s.push('}');
+            }
             Inline::Footnote(t) => {
                 s.push_str("\\footnote{");
                 s.push_str(&escape_latex(t));
@@ -698,6 +720,39 @@ mod tests {
             Inline::CrossRef("fig:arch".into()),
         ]);
         assert_eq!(rendered, "见图\\ref{fig:arch}");
+    }
+
+    #[test]
+    fn citation_renders_as_latex_cite() {
+        let rendered = render_inlines(&[Inline::Citation(vec!["a".into(), "b".into()])]);
+        assert_eq!(rendered, "\\cite{a,b}");
+    }
+
+    #[test]
+    fn wrapper_adds_bibliography_only_for_citations() {
+        let cited = wrap_document("正文\\cite{a}\n", true);
+        assert!(cited.contains("\\usepackage[style=gb7714-2015]{biblatex}"));
+        assert!(cited.contains("\\addbibresource{references.bib}"));
+        assert!(cited.contains("\\printbibliography"));
+        assert!(!cited.contains("\\nocite"));
+
+        let plain = wrap_document("正文\n", false);
+        assert!(!plain.contains("biblatex"));
+        assert!(!plain.contains("printbibliography"));
+    }
+
+    #[test]
+    fn validation_failure_does_not_create_official_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("paper.md");
+        let output = dir.path().join("out/report.tex");
+        fs::write(&input, "---\nbibliography: missing.bib\n---\n正文 [@a]\n").unwrap();
+
+        let err = run(&input, Some(&output)).unwrap_err();
+
+        assert!(err.to_string().contains("missing.bib"));
+        assert!(!output.exists());
+        assert!(!output.parent().unwrap().exists());
     }
 
     #[test]

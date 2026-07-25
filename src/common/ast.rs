@@ -66,6 +66,8 @@ pub enum Inline {
     },
     /// 交叉引用。如 {@chap:overview}，tex 输出 \ref{id}；其他端降级为 id 文本。
     CrossRef(String),
+    /// Pandoc 风格方括号文献引用。如 `[@key]` 或 `[@a; @b]`。
+    Citation(Vec<String>),
     /// 行内脚注。如 `[^1]:(注释内容)`，仅保存注释内容；编号由输出格式自行生成。
     Footnote(String),
 }

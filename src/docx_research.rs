@@ -585,9 +585,7 @@ impl MainEmitter {
             }
             (3, Mode::Appendix) => docx.add_paragraph(heading_section_paragraph(text)),
             (4, Mode::Appendix) => docx.add_paragraph(heading_subsection_paragraph(text)),
-            (2, Mode::Reference) => {
-                docx.add_paragraph(heading_section_paragraph(text))
-            }
+            (2, Mode::Reference) => docx.add_paragraph(heading_section_paragraph(text)),
             (3, Mode::Reference) => docx.add_paragraph(heading_subsection_paragraph(text)),
             (_, Mode::Abstract) => {
                 // 摘要里出现的子标题降级为加粗居中段落
@@ -857,21 +855,37 @@ fn add_list_paragraph(docx: Docx, level: u8, prefix: &str, content: &[Inline]) -
     docx.add_paragraph(p)
 }
 
+fn inline_run_style(ip: &Inline) -> (String, bool, bool) {
+    match ip {
+        Inline::Text(t) => (t.clone(), false, false),
+        Inline::Bold(t) => (t.clone(), true, false),
+        Inline::Italic(t) => (t.clone(), false, true),
+        Inline::Code(t) => (t.clone(), false, false),
+        Inline::Link { text, .. } => (text.clone(), false, false),
+        // docx 暂不支持插图，降级为替代文本
+        Inline::Image { alt, .. } => (alt.clone(), false, false),
+        // docx 暂不支持交叉引用，降级为 id 文本
+        Inline::CrossRef(id) => (id.clone(), false, false),
+        // docx 暂不生成原生文献引用，保留 Pandoc 方括号标记
+        Inline::Citation(keys) => (
+            format!(
+                "[{}]",
+                keys.iter()
+                    .map(|key| format!("@{key}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            false,
+            false,
+        ),
+        // docx 暂不生成脚注部件，降级为全角括号内联注释
+        Inline::Footnote(t) => (format!("（{}）", t), false, false),
+    }
+}
+
 fn add_inlines(mut p: Paragraph, inlines: &[Inline]) -> Paragraph {
     for ip in inlines {
-        let (text, bold, italic) = match ip {
-            Inline::Text(t) => (t.clone(), false, false),
-            Inline::Bold(t) => (t.clone(), true, false),
-            Inline::Italic(t) => (t.clone(), false, true),
-            Inline::Code(t) => (t.clone(), false, false),
-            Inline::Link { text, .. } => (text.clone(), false, false),
-            // docx 暂不支持插图，降级为替代文本
-            Inline::Image { alt, .. } => (alt.clone(), false, false),
-            // docx 暂不支持交叉引用，降级为 id 文本
-            Inline::CrossRef(id) => (id.clone(), false, false),
-            // docx 暂不生成脚注部件，降级为全角括号内联注释
-            Inline::Footnote(t) => (format!("（{}）", t), false, false),
-        };
+        let (text, bold, italic) = inline_run_style(ip);
         let mut run = Run::new().add_text(&text).size(SIZE_BODY);
         // 斜体在中文里用楷体表达（与 LaTeX `ItalicFont={FZKai-Z03}` 一致）
         if italic {
@@ -910,19 +924,7 @@ fn add_table(docx: Docx, rows: &[Vec<String>]) -> Docx {
             let is_header = row_idx == 0;
             let mut p = Paragraph::new().align(align);
             for ip in crate::common::inline::parse(cell_data) {
-                let (text, bold, italic) = match &ip {
-                    Inline::Text(t) => (t.clone(), false, false),
-                    Inline::Bold(t) => (t.clone(), true, false),
-                    Inline::Italic(t) => (t.clone(), false, true),
-                    Inline::Code(t) => (t.clone(), false, false),
-                    Inline::Link { text, .. } => (text.clone(), false, false),
-                    // docx 暂不支持插图，降级为替代文本
-                    Inline::Image { alt, .. } => (alt.clone(), false, false),
-                    // docx 暂不支持交叉引用，降级为 id 文本
-                    Inline::CrossRef(id) => (id.clone(), false, false),
-                    // docx 暂不生成脚注部件，降级为全角括号内联注释
-                    Inline::Footnote(t) => (format!("（{}）", t), false, false),
-                };
+                let (text, bold, italic) = inline_run_style(&ip);
                 let mut run = Run::new().add_text(&text).size(SIZE_BODY);
                 if is_header {
                     run = run.fonts(font_set(FONT_HEAD)).bold();
@@ -1043,5 +1045,14 @@ mod tests {
             },
         );
         assert_eq!(e.appendix_idx, 2);
+    }
+
+    #[test]
+    fn docx_fallback_reconstructs_citation_source() {
+        let (text, bold, italic) =
+            inline_run_style(&Inline::Citation(vec!["a".into(), "b".into()]));
+        assert_eq!(text, "[@a; @b]");
+        assert!(!bold);
+        assert!(!italic);
     }
 }

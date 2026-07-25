@@ -9,7 +9,9 @@
 #![allow(dead_code)]
 
 pub mod ast;
+pub mod citation;
 pub mod crossref;
+pub mod front_matter;
 pub mod heading;
 pub mod images;
 pub mod inline;

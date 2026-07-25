@@ -146,7 +146,10 @@ impl TexResearchEmitter {
 
     fn start_appendix_part(&mut self) {
         self.appendix_file_idx += 1;
-        self.start_part(format!("appendix/appendix{:02}.tex", self.appendix_file_idx));
+        self.start_part(format!(
+            "appendix/appendix{:02}.tex",
+            self.appendix_file_idx
+        ));
     }
 
     pub fn emit_all(&mut self, blocks: &[Block]) {
@@ -308,16 +311,12 @@ impl TexResearchEmitter {
                 (1, _) | (2, false) => {
                     self.appendix_idx += 1;
                     self.start_appendix_part();
-                    self.out.push_str(&format!(
-                        "\\chapter{{{}}}{}\\par\n\n",
-                        escaped, label_cmd
-                    ));
+                    self.out
+                        .push_str(&format!("\\chapter{{{}}}{}\\par\n\n", escaped, label_cmd));
                 }
                 (2, true) | (3, false) => {
-                    self.out.push_str(&format!(
-                        "\\section{{{}}}{}\\par\n\n",
-                        escaped, label_cmd
-                    ));
+                    self.out
+                        .push_str(&format!("\\section{{{}}}{}\\par\n\n", escaped, label_cmd));
                 }
                 (3, true) | (4, false) => {
                     self.out.push_str(&format!(
@@ -342,19 +341,15 @@ impl TexResearchEmitter {
                 self.section_num = 0;
                 self.subsection_num = 0;
                 self.start_data_part();
-                self.out.push_str(&format!(
-                    "\\chapter{{{}}}{}\\par\n\n",
-                    escaped, label_cmd
-                ));
+                self.out
+                    .push_str(&format!("\\chapter{{{}}}{}\\par\n\n", escaped, label_cmd));
             }
             // level 3 → \section
             3 => {
                 self.section_num += 1;
                 self.subsection_num = 0;
-                self.out.push_str(&format!(
-                    "\\section{{{}}}{}\\par\n\n",
-                    escaped, label_cmd
-                ));
+                self.out
+                    .push_str(&format!("\\section{{{}}}{}\\par\n\n", escaped, label_cmd));
             }
             // level 4 → \subsection
             4 => {
@@ -660,6 +655,11 @@ fn render_inlines(inlines: &[Inline]) -> String {
             Inline::CrossRef(id) => {
                 s.push_str("\\ref{");
                 s.push_str(id);
+                s.push('}');
+            }
+            Inline::Citation(keys) => {
+                s.push_str("\\cite{");
+                s.push_str(&keys.join(","));
                 s.push('}');
             }
             Inline::Footnote(t) => {
@@ -1124,7 +1124,10 @@ mod tests {
             text: "背景".into(),
         });
         let body = test_body(e);
-        assert!(body.contains("\\section{背景}\\label{sec:bg}"), "got {body}");
+        assert!(
+            body.contains("\\section{背景}\\label{sec:bg}"),
+            "got {body}"
+        );
     }
 
     #[test]
@@ -1135,6 +1138,12 @@ mod tests {
             Inline::Text("章".into()),
         ]);
         assert_eq!(rendered, "见第\\ref{chap:overview}章");
+    }
+
+    #[test]
+    fn test_citation_renders_as_latex_cite() {
+        let rendered = render_inlines(&[Inline::Citation(vec!["a".into(), "b".into()])]);
+        assert_eq!(rendered, "\\cite{a,b}");
     }
 
     #[test]

@@ -26,10 +26,32 @@ cargo build --release
 |---|---|
 | `docx official` | 无 |
 | `docx research` | 无 |
-| `tex  official` | 转换时无外部依赖；PDF 编译需要 tectonic 或 xelatex |
+| `tex  official` | 转换时无外部依赖；PDF 编译需要 tectonic 或 xelatex，有参考文献时 xelatex 路径需要 biber |
 | `tex  research` | 转换时无外部依赖；PDF 编译需要 tectonic 或 xelatex，有参考文献时 xelatex 路径需要 biber |
 
-`tex research` 不再调用 pandoc。若输出目录不存在有效 `references.bib`，生成的 `.tex` 会自动移除 `biblatex` 相关配置，避免编译时报 `references.bib` 缺失。
+`tex research` 不再调用 pandoc。两种 tex 样式都支持 BibTeX 文献引用；转换阶段由
+Rust 内生解析器检查 Bib 文件，不依赖外部程序。
+
+## BibTeX 文献引用（tex）
+
+在 Markdown 顶部声明一个 Bib 文件：
+
+```markdown
+---
+bibliography: refs/library.bib
+---
+
+已有研究给出了相同结论 [@zhang2024]，也可同时引用多篇文献 [@li2023; @wang2022]。
+```
+
+Bib 路径相对于单个 Markdown 文件所在目录；目录输入时相对于输入目录。转换结果分别
+使用 `\cite{zhang2024}`、`\cite{li2023,wang2022}`，并把 Bib 文件复制到输出目录，
+统一命名为 `references.bib`。只支持上述方括号形式，不支持裸 `@key`、页码、前后缀
+或多个 Bib 文件。
+
+出现引用但未声明 `bibliography`、Bib 文件不可读或格式错误、存在重复 key、引用 key
+不存在时，转换会在写出 tex/PDF、图片或分章文件前停止。Bib 中未引用的条目允许保留，
+生成的参考文献表只包含正文实际引用的条目。
 
 ## tex 输出布局（分章 + 图片）
 
@@ -43,13 +65,14 @@ out/
 │   └── chapter02.tex
 ├── appendix/                 # 附录章节（仅 research，<!-- [附录] --> 之后）
 │   └── appendix01.tex
+├── references.bib            # 有文献引用时，从 front matter 声明的 Bib 文件复制
 └── figures/                  # markdown 引用的本地图片复制至此，引用路径自动改写
 ```
 
 - research 按 `\chapter`（H1/H2）拆分；official 按 H2（"一、"级节）拆分。摘要、版本变更记录、参考文献等留在主文件。
 - 图片语法 `![替代文本](路径)`：独占一段时输出 `figure` 环境（`\includegraphics[width=\textwidth]`，替代文本作为 `\caption`）；行内混排时输出裸 `\includegraphics`。本地图片复制到 `figures/` 并把引用改写为 `figures/<文件名>`（同名不同源自动加序号后缀）；远程 URL 与找不到的文件保持原样并告警。docx 与表格单元格内暂不支持插图，降级为替代文本。
 
-TeX 输出完成后会自动检测 `tectonic`，没有则检测 `xelatex`。检测到可用引擎时会直接生成同名 `.pdf`，并清理同名 LaTeX 中间产物（如 `.aux`、`.log`、`.toc`、`.bcf`、`.run.xml` 等）。常规输出目录最终只需要保留 `.md`、`.tex`、`.cls` 和 `.pdf`；若项目使用参考文献，用户维护的 `references.bib` 不会被自动删除。
+TeX 输出完成后会自动检测 `tectonic`，没有则检测 `xelatex`。检测到可用引擎时会直接生成同名 `.pdf`，并清理同名 LaTeX 中间产物（如 `.aux`、`.log`、`.toc`、`.bcf`、`.run.xml` 等）。常规输出目录最终只需要保留 `.md`、`.tex`、`.cls` 和 `.pdf`；有文献引用时还会保留复制后的 `references.bib`。
 
 ## 字体
 
@@ -72,7 +95,7 @@ TeX 输出完成后会自动检测 `tectonic`，没有则检测 `xelatex`。检�
 
 扩展标记的完整使用约定见 [docs/markdown-extensions.md](docs/markdown-extensions.md)，撰写新文档时请遵循。
 
-当前 Markdown 解析为 Rust 内生实现，覆盖本项目常用子集：标题、段落、基础行内格式、普通链接、图片、行内脚注、列表行、fenced code block、GFM 管道表格、pandoc 风格表格标题，以及 research 区段标记。
+当前 Markdown 解析为 Rust 内生实现，覆盖本项目常用子集：标题、段落、基础行内格式、普通链接、图片、行内脚注、Pandoc 方括号文献引用、列表行、fenced code block、GFM 管道表格、pandoc 风格表格标题，以及 research 区段标记。
 
 尚未等价覆盖 pandoc 全量语法，例如数学公式、引用式脚注（`[^id]` + 单独定义行）、blockquote、raw LaTeX/HTML、复杂嵌套列表、多段落列表、复杂表格和完整 inline 嵌套规则。
 

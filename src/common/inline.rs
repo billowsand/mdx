@@ -15,7 +15,10 @@ use super::ast::Inline;
 fn inline_matcher() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)").expect("invalid inline regex")
+        Regex::new(
+            r"(`[^`]+`|\[(?:@[^\s@;,\[\]{}\\]+)(?:\s*;\s*@[^\s@;,\[\]{}\\]+)*\]|\*\*[^*]+\*\*|\*[^*]+\*)",
+        )
+        .expect("invalid inline regex")
     })
 }
 
@@ -29,7 +32,8 @@ fn link_matcher() -> &'static Regex {
 fn footnote_matcher() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\[\^[^\]]+\][:：](?:\(([^)]*)\)|（([^）]*)）)").expect("invalid footnote regex")
+        Regex::new(r"\[\^[^\]]+\][:：](?:\(([^)]*)\)|（([^）]*)）)")
+            .expect("invalid footnote regex")
     })
 }
 
@@ -184,6 +188,12 @@ fn parse_no_links(text: &str) -> Vec<Inline> {
             out.push(Inline::Italic(part[1..part.len() - 1].to_string()));
         } else if part.starts_with('`') && part.ends_with('`') && part.len() >= 2 {
             out.push(Inline::Code(part[1..part.len() - 1].to_string()));
+        } else if part.starts_with('[') && part.ends_with(']') {
+            let keys = part[1..part.len() - 1]
+                .split(';')
+                .map(|item| item.trim().trim_start_matches('@').to_string())
+                .collect();
+            out.push(Inline::Citation(keys));
         } else {
             out.push(Inline::Text(part.to_string()));
         }
@@ -208,6 +218,17 @@ pub fn flatten(inlines: &[Inline]) -> String {
             Inline::Link { text, .. } => s.push_str(text),
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::CrossRef(id) => s.push_str(id),
+            Inline::Citation(keys) => {
+                s.push('[');
+                s.push_str(
+                    &keys
+                        .iter()
+                        .map(|key| format!("@{key}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+                s.push(']');
+            }
             Inline::Footnote(t) => {
                 s.push('（');
                 s.push_str(t);
@@ -256,7 +277,10 @@ mod tests {
                 Inline::Bold("重点".into()),
                 Inline::Footnote("注".into()),
                 Inline::Text(" ".into()),
-                Inline::Link { text: "页".into(), url: "https://x".into() },
+                Inline::Link {
+                    text: "页".into(),
+                    url: "https://x".into()
+                },
             ]
         );
     }
@@ -356,6 +380,37 @@ mod tests {
                 text: "页".into(),
                 url: "https://x".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn parses_single_and_multiple_citations() {
+        assert_eq!(parse("[@key]"), vec![Inline::Citation(vec!["key".into()])]);
+        assert_eq!(
+            parse("前文 [@a; @b] 后文"),
+            vec![
+                Inline::Text("前文 ".into()),
+                Inline::Citation(vec!["a".into(), "b".into()]),
+                Inline::Text(" 后文".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_citations_and_inline_code_stay_literal() {
+        assert_eq!(parse("@key"), vec![Inline::Text("@key".into())]);
+        assert_eq!(
+            parse("[@key, p. 2]"),
+            vec![Inline::Text("[@key, p. 2]".into())]
+        );
+        assert_eq!(parse("`[@key]`"), vec![Inline::Code("[@key]".into())]);
+    }
+
+    #[test]
+    fn flatten_reconstructs_citation_source() {
+        assert_eq!(
+            flatten(&[Inline::Citation(vec!["a".into(), "b".into()])]),
+            "[@a; @b]"
         );
     }
 }

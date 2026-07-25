@@ -32,19 +32,24 @@ pub enum InputKind {
 }
 
 /// 把输入路径合并成单一字符串（目录则按文件名升序拼接所有 .md）
+pub fn collect_raw(input: &Path) -> Result<String> {
+    match classify(input)? {
+        InputKind::File => {
+            fs::read_to_string(input).with_context(|| format!("读取文件 {} 失败", input.display()))
+        }
+        InputKind::Directory => merge_dir(input),
+    }
+}
+
+/// 把输入路径合并成单一字符串，并剥除 Markdown 水平分隔线。
 pub fn collect(input: &Path) -> Result<String> {
-    let raw = match classify(input)? {
-        InputKind::File => fs::read_to_string(input)
-            .with_context(|| format!("读取文件 {} 失败", input.display()))?,
-        InputKind::Directory => merge_dir(input)?,
-    };
-    Ok(strip_horizontal_rules(&raw))
+    Ok(strip_horizontal_rules(&collect_raw(input)?))
 }
 
 /// 删除整行只剩 `---` / `----` …… 的水平分隔线。
 ///
 /// 表格分隔行（如 `|---|---|`）以 `|` 起始，正则不会命中；不影响表格解析。
-fn strip_horizontal_rules(content: &str) -> String {
+pub(crate) fn strip_horizontal_rules(content: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"^\s*-{3,}\s*$").expect("invalid hr regex"));
     content
@@ -82,7 +87,10 @@ fn merge_dir(dir: &Path) -> Result<String> {
 
     println!("找到 {} 个 markdown 文件:", md_files.len());
     for f in &md_files {
-        println!("  - {}", f.file_name().unwrap_or_default().to_string_lossy());
+        println!(
+            "  - {}",
+            f.file_name().unwrap_or_default().to_string_lossy()
+        );
     }
 
     let mut merged = String::new();
@@ -109,4 +117,20 @@ pub fn default_output(input: &Path, ext: &str) -> PathBuf {
             .unwrap_or("output"),
     };
     PathBuf::from(format!("{}.{}", name, ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_raw_preserves_opening_front_matter() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("paper.md");
+        fs::write(&md, "---\nbibliography: refs.bib\n---\n正文\n").unwrap();
+
+        let raw = collect_raw(&md).unwrap();
+
+        assert!(raw.starts_with("---\nbibliography: refs.bib\n---"));
+    }
 }
