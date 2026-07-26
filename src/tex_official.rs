@@ -391,8 +391,7 @@ impl TexEmitter {
         if max_cols == 0 {
             return;
         }
-        let col_spec: String = std::iter::repeat('l')
-            .take(max_cols)
+        let col_spec: String = std::iter::repeat_n('l', max_cols)
             .map(|c| format!("|{}", c))
             .collect::<String>()
             + "|";
@@ -781,8 +780,11 @@ mod tests {
         let item_child = body.find("\\item 新的第二级").expect("child item");
         let end_inner = body.find("\\end{inparaenum}").expect("inner end");
         assert!(
-            begin_outer < item_parent && item_parent < begin_inner && begin_inner < item_child
-                && item_child < end_inner && end_inner < end_outer,
+            begin_outer < item_parent
+                && item_parent < begin_inner
+                && begin_inner < item_child
+                && item_child < end_inner
+                && end_inner < end_outer,
             "子环境应嵌套在父环境内，实际顺序：\n{}",
             body
         );

@@ -1,0 +1,41 @@
+name: Feature request
+description: 建议新的语法、输出能力或工作流改进
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue，确认没有相同建议。
+          required: true
+        - label: 我已阅读当前支持范围和明确不支持的语法。
+          required: true
+  - type: textarea
+    attributes:
+      label: 使用场景
+      description: 你要完成什么文档工作？当前方案为什么不够？
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 建议方案
+      description: 请给出期望的 CLI、Markdown 输入和输出表现。
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: 影响范围
+      options:
+        - 所有输出
+        - DOCX
+        - TeX / PDF
+        - official 样式
+        - research 样式
+        - 文档或工程化
+        - 不确定
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 可选方案与补充信息

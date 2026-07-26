@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞报告
+    url: https://github.com/billowsand/mdx/security/advisories/new
+    about: 请使用私密 Security Advisory，不要公开披露漏洞。
+  - name: 使用说明
+    url: https://github.com/billowsand/mdx/blob/master/docs/markdown-extensions.md
+    about: 提问前先查看受支持的 Markdown 语法与限制。

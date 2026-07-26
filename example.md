@@ -31,7 +31,7 @@
 
 目前缺乏一款轻量级、可定制、原生支持中文排版规范的文档转换工具。mdx 旨在填补这一空白，目标有三：
 
-1. 一套 Markdown 子集解析器，纯 Rust 实现，零运行时外部依赖；
+1. 一套 Markdown 子集解析器，纯 Rust 实现，转换阶段无需 pandoc；
 2. 多 emitter 共享同一 IR，避免语法解析重复造轮子；
 3. 公文 / 研报两套样式在 docx 与 tex 上视觉一致。
 
@@ -235,4 +235,4 @@ cargo build --release      # 产物 target/release/mdx
 cargo test                 # parser / numbering / 表格 / emitter 单测
 ```
 
-PDF 编译依赖任一可用 TeX 引擎：优先 `tectonic`，否则回退 `xelatex`；研报路径含参考文献时 `xelatex` 还需配合 `biber`。
+PDF 编译依赖任一可用 TeX 引擎：优先 `xelatex`，否则回退 `tectonic`；含参考文献时 `xelatex` 还需配合 `biber`。

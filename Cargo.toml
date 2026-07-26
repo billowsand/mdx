@@ -1,9 +1,24 @@
 [package]
 name = "mdx"
-version = "2.3.0"
+version = "2.4.0"
 edition = "2021"
 authors = ["marmot"]
-description = "Unified markdown converter: docx/tex × official/research"
+description = "面向中文公文与研究报告的 Markdown 转 DOCX/TeX 命令行工具"
+license = "MIT"
+readme = "README.md"
+keywords = ["markdown", "docx", "latex", "chinese", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+rust-version = "1.85"
+publish = false
+repository = "https://github.com/billowsand/mdx"
+homepage = "https://github.com/billowsand/mdx"
+documentation = "https://github.com/billowsand/mdx/blob/master/docs/markdown-extensions.md"
+exclude = [
+    ".claude/",
+    ".github/",
+    "AGENTS.md",
+    "docs/superpowers/",
+]
 
 [[bin]]
 name = "mdx"

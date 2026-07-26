@@ -11,12 +11,12 @@ use std::path::Path;
 
 // ===== 常量 =====
 const CIRCLE_NUMBERS_1: &[&str] = &[
-    "⑴", "⑵", "⑶", "⑷", "⑸", "⑹", "⑺", "⑻", "⑼", "⑽",
-    "⑾", "⑿", "⒀", "⒁", "⒂", "⒃", "⒄", "⒅", "⒆", "⒇",
+    "⑴", "⑵", "⑶", "⑷", "⑸", "⑹", "⑺", "⑻", "⑼", "⑽", "⑾", "⑿", "⒀", "⒁", "⒂", "⒃", "⒄", "⒅", "⒆",
+    "⒇",
 ];
 const CIRCLE_NUMBERS_2: &[&str] = &[
-    "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
-    "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳",
+    "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲",
+    "⑳",
 ];
 
 // ===== 工具函数 =====
@@ -26,7 +26,9 @@ fn font_set(name: &str) -> RunFonts {
 }
 
 fn number_to_chinese(num: usize) -> String {
-    let chinese_nums = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+    let chinese_nums = [
+        "", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+    ];
     if num <= 10 {
         chinese_nums[num].to_string()
     } else if num < 20 {
@@ -46,7 +48,9 @@ fn number_to_chinese(num: usize) -> String {
 
 fn int_to_roman(num: usize) -> String {
     let val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
-    let syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"];
+    let syms = [
+        "M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I",
+    ];
     let mut num = num;
     let mut result = String::new();
     for i in 0..val.len() {
@@ -71,8 +75,8 @@ fn number_to_uppercase_letter(num: usize) -> String {
 
 fn convert_quotes(text: &str) -> String {
     let mut text = text.to_string();
-    text = text.replace('\u{201c}', "\"").replace('\u{201d}', "\"");
-    text = text.replace('\u{2018}', "'").replace('\u{2019}', "'");
+    text = text.replace(['\u{201c}', '\u{201d}'], "\"");
+    text = text.replace(['\u{2018}', '\u{2019}'], "'");
 
     let mut chars: Vec<char> = text.chars().collect();
     let mut in_double = false;
@@ -347,24 +351,14 @@ impl Converter {
                         .fonts(song_fonts.clone())
                         .size(28),
                 )
-                .add_run(
-                    Run::new()
-                        .add_text("1")
-                        .fonts(song_fonts.clone())
-                        .size(28),
-                )
+                .add_run(Run::new().add_text("1").fonts(song_fonts.clone()).size(28))
                 .add_run(
                     Run::new()
                         .add_field_char(FieldCharType::End, false)
                         .fonts(song_fonts.clone())
                         .size(28),
                 )
-                .add_run(
-                    Run::new()
-                        .add_text(" \u{2014}")
-                        .fonts(song_fonts)
-                        .size(28),
-                ),
+                .add_run(Run::new().add_text(" \u{2014}").fonts(song_fonts).size(28)),
         );
 
         let docx = std::mem::replace(&mut self.docx, Docx::new());
@@ -403,7 +397,11 @@ impl Converter {
                 // 首行黑体、其余行仿宋_GB2312；字号统一四号(28hp)。
                 // 不再整行强制加粗——交由 process_text_formatting 解析 cell 内的
                 // **加粗**/*斜体*，确保 markdown 行内格式在表格里同样生效。
-                let font = if row_idx == 0 { "黑体" } else { "仿宋_GB2312" };
+                let font = if row_idx == 0 {
+                    "黑体"
+                } else {
+                    "仿宋_GB2312"
+                };
                 let p = Paragraph::new().align(align);
                 let p = process_text_formatting(p, cell_data, font, 28, false);
                 cells.push(TableCell::new().add_paragraph(p));

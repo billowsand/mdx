@@ -153,15 +153,15 @@ impl Merger {
 
             // 提取标题（第一个 # 标题）
             if doc_title.is_none() {
-                doc_title = extract_title_from_content(&content);
+                doc_title = extract_title_from_content(content);
                 if doc_title.is_some() {
-                    merged.push_str(&remove_first_h1(&content));
+                    merged.push_str(&remove_first_h1(content));
                     merged.push_str("\n\n");
                     continue;
                 }
             }
 
-            merged.push_str(&content);
+            merged.push_str(content);
             merged.push_str("\n\n");
         }
 
@@ -176,10 +176,10 @@ impl Merger {
             .with_context(|| format!("读取文件 {} 失败", input_file.display()))?;
         let content = strip_utf8_bom(&content);
 
-        let doc_title = extract_title_from_content(&content);
+        let doc_title = extract_title_from_content(content);
 
         // 移除第一个 # 标题行（因为它已经被提取为 title）
-        let content_without_first_h1 = remove_first_h1(&content);
+        let content_without_first_h1 = remove_first_h1(content);
 
         Ok((content_without_first_h1, doc_title))
     }

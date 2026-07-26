@@ -31,10 +31,7 @@ pub fn is_table_separator(line: &str) -> bool {
 /// - 允许块内最多一个空行（见原实现的"前看一行"逻辑）
 /// - 必须含至少一行分隔线
 /// - 输出已剥离首尾 `|`，cell 已 trim
-pub fn parse_table(
-    lines: &[String],
-    start_index: usize,
-) -> (Option<Vec<Vec<String>>>, usize) {
+pub fn parse_table(lines: &[String], start_index: usize) -> (Option<Vec<Vec<String>>>, usize) {
     let mut table_lines = Vec::new();
     let mut i = start_index;
 

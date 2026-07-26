@@ -201,7 +201,7 @@ fn calculate_width_ratios(columns_stats: &[ColumnStats]) -> Vec<f64> {
         let mut ratio = (weight / total_weight) * num_cols as f64;
 
         // 应用最小/最大约束
-        ratio = ratio.max(MIN_WIDTH_RATIO).min(MAX_WIDTH_RATIO);
+        ratio = ratio.clamp(MIN_WIDTH_RATIO, MAX_WIDTH_RATIO);
 
         // 四舍五入到一位小数
         ratio = (ratio * 10.0 + 0.5).floor() / 10.0;
@@ -280,16 +280,16 @@ fn push_cell_inlines(result: &mut String, inlines: &[Inline]) {
             }
             Inline::Code(t) => {
                 result.push_str("\\texttt{");
-                result.push_str(&escape_latex(&t));
+                result.push_str(&escape_latex(t));
                 result.push('}');
             }
-            Inline::Link { text, .. } => result.push_str(&escape_latex(&text)),
+            Inline::Link { text, .. } => result.push_str(&escape_latex(text)),
             // longtblr 单元格内不插图，降级为替代文本
-            Inline::Image { alt, .. } => result.push_str(&escape_latex(&alt)),
+            Inline::Image { alt, .. } => result.push_str(&escape_latex(alt)),
             // 单元格内交叉引用：\ref 在 longtblr 中可用，直接输出
             Inline::CrossRef(id) => {
                 result.push_str("\\ref{");
-                result.push_str(&id);
+                result.push_str(id);
                 result.push('}');
             }
             Inline::Citation(keys) => {
@@ -299,9 +299,9 @@ fn push_cell_inlines(result: &mut String, inlines: &[Inline]) {
             }
             // longtblr 单元格内 \footnote 不生效，降级为全角括号内联注释
             Inline::Footnote(t) => {
-                result.push_str("（");
-                result.push_str(&escape_latex(&t));
-                result.push_str("）");
+                result.push('（');
+                result.push_str(&escape_latex(t));
+                result.push('）');
             }
         }
     }

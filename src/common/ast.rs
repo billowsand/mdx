@@ -4,6 +4,7 @@
 //! 形态由 emitter 自行决定，common 不预设公文 / 研报。
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Block {
     /// 标题。`level` 是原 markdown 中的 `#` 数量（1..=6）。
     /// `text` 为已去除旧编号、引号已正规化后的纯标题文本，未做行内格式拆分。

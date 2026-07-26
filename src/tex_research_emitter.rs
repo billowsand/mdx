@@ -903,8 +903,16 @@ mod tests {
             "expected asparaenum wrapper, got: {}",
             body
         );
-        assert!(body.contains("\\item 第一项"), "missing L1 第一项: {}", body);
-        assert!(body.contains("\\item 第二项"), "missing L1 第二项: {}", body);
+        assert!(
+            body.contains("\\item 第一项"),
+            "missing L1 第一项: {}",
+            body
+        );
+        assert!(
+            body.contains("\\item 第二项"),
+            "missing L1 第二项: {}",
+            body
+        );
         // L2 单独一项应被包在 inparaenum 里
         assert!(
             body.contains("\\begin{inparaenum}") && body.contains("\\end{inparaenum}"),

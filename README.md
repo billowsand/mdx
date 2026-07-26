@@ -1,242 +1,198 @@
-# mdx — 统一 markdown 转换器
+<div align="center">
 
-把 markdown 转成 docx 或 tex，覆盖**公文**与**研究报告**两套样式，共 4 种组合。
+# mdx
 
-## 4 种组合
+**面向中文公文与研究报告的 Markdown → DOCX / TeX 转换器**
 
-```
-mdx docx <input> --style official  -o out.docx   # 公文 docx
-mdx docx <input> --style research  -o out.docx   # 研究报告 docx（带封面+目录+章节编号）
-mdx tex  <input> --style official  -o out.tex    # 公文 tex；检测到 TeX 引擎时自动编译 PDF
-mdx tex  <input> --style research  -o out.tex    # 研究报告 tex（纯 Rust + ctexbook）；自动编译 PDF
-```
+一次写作，四种专业排版组合。纯 Rust 解析，无需 Pandoc。
 
-`<input>` 可以是单个 `.md` 文件，也可以是包含 `.md` 的目录（按文件名升序合并）。
+[![CI](https://github.com/billowsand/mdx/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/billowsand/mdx/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/billowsand/mdx?display_name=tag&sort=semver)](https://github.com/billowsand/mdx/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.85%2B-dea584?logo=rust)](https://www.rust-lang.org/)
 
-## 编译
+[快速开始](#快速开始) · [功能概览](#功能概览) · [语法文档](docs/markdown-extensions.md) · [示例](examples/) · [参与贡献](CONTRIBUTING.md)
+
+</div>
+
+## 为什么选择 mdx？
+
+通用转换器擅长覆盖大量格式，但中文公文和研究报告往往需要固定的字体、字号、页边距、章节编号、封面与目录。mdx 将这些规则固化为两套可直接使用的样式，并让 DOCX 与 TeX 输出共享同一套 Markdown 语义。
+
+| | `official` 公文 | `research` 研究报告 |
+|---|---|---|
+| **DOCX** | 公文字体与“四级标题”编号 | 封面、目录、章节编号 |
+| **TeX / PDF** | 内置公文 LaTeX 类 | `ctexbook` 研报模板、分章输出 |
+
+- **四种输出组合**：`docx/tex × official/research`。
+- **纯 Rust 转换**：转换阶段不依赖 Pandoc；DOCX 输出无运行时外部依赖。
+- **面向中文排版**：内置公文和研究报告常用字体、字号及编号规则。
+- **结构化长文档**：支持目录输入、章节拆分、附录、封面字段和版本记录。
+- **专业写作能力**：支持图片、表格、行内脚注、交叉引用与 BibTeX 文献引用。
+- **谨慎失败**：文献或交叉引用校验失败时，在写出不完整 TeX/PDF 前停止。
+
+## 快速开始
+
+### 安装
+
+#### 下载预编译版本（推荐）
+
+从 [GitHub Releases](https://github.com/billowsand/mdx/releases/latest) 下载与你的平台对应的压缩包，解压后把 `mdx`（Windows 为 `mdx.exe`）所在目录加入 `PATH`。
+
+发布工作流提供 Windows x86_64、Linux x86_64/ARM64、macOS Intel/Apple Silicon 构建及 `SHA256SUMS.txt`。
+
+#### 从源码安装
+
+需要 Rust 1.85 或更高版本：
 
 ```bash
-cargo build --release
-# 二进制位于 target/release/mdx
+git clone https://github.com/billowsand/mdx.git
+cd mdx
+cargo install --path . --locked
+mdx --version
 ```
 
-## 二进制依赖
+也可在项目根目录直接运行 `cargo build --release`，二进制位于 `target/release/`。
 
-| 子命令 | 依赖 |
+### 第一次转换
+
+```bash
+# 中文公文 DOCX
+mdx docx examples/official.md --style official -o output/official.docx
+
+# 研究报告 DOCX
+mdx docx examples/research.md --style research -o output/research.docx
+
+# 中文公文 TeX；检测到 TeX 引擎时同时生成 PDF
+mdx tex examples/official.md --style official -o output/official.tex
+
+# 研究报告 TeX / PDF
+mdx tex examples/research.md --style research -o output/research.tex
+```
+
+`<input>` 可以是单个 `.md` 文件，也可以是目录。目录模式会读取顶层 Markdown，并按文件名升序合并；推荐用 `01-intro.md`、`02-body.md` 控制顺序。
+
+## 命令行速查
+
+```text
+mdx docx <input> --style <official|research> [-o <output.docx>]
+mdx tex  <input> --style <official|research> [-o <output.tex>] [--template <template.tex>]
+```
+
+| 参数 | 说明 |
 |---|---|
-| `docx official` | 无 |
-| `docx research` | 无 |
-| `tex  official` | 转换时无外部依赖；PDF 编译需要 tectonic 或 xelatex，有参考文献时 xelatex 路径需要 biber |
-| `tex  research` | 转换时无外部依赖；PDF 编译需要 tectonic 或 xelatex，有参考文献时 xelatex 路径需要 biber |
+| `<input>` | Markdown 文件，或包含 Markdown 的目录 |
+| `--style official` | 使用中文公文样式 |
+| `--style research` | 使用研究报告样式 |
+| `-o, --output` | 指定输出路径；省略时按输入名称生成 |
+| `--template` | 仅 `tex research`：覆盖内置 LaTeX 模板 |
+| `-h, --help` | 查看帮助 |
+| `-V, --version` | 查看版本 |
 
-`tex research` 不再调用 pandoc。两种 tex 样式都支持 BibTeX 文献引用；转换阶段由
-Rust 内生解析器检查 Bib 文件，不依赖外部程序。
+## 功能概览
 
-## BibTeX 文献引用（tex）
+### 中文公文（official）
 
-在 Markdown 顶部声明一个 Bib 文件：
+- H1 为居中大标题，H2–H5 自动生成“一、”“（一）”“1.”“(1)”编号。
+- 正文、标题、列表与表格应用仿宋、黑体、楷体、小标宋等公文字体约定。
+- DOCX 直接生成；TeX 使用内置 `official.cls`。
 
-```markdown
----
-bibliography: refs/library.bib
----
+### 研究报告（research）
 
-已有研究给出了相同结论 [@zhang2024]，也可同时引用多篇文献 [@li2023; @wang2022]。
-```
+- 从 front matter 读取密级、文件类型、编号、版本、单位、日期与文档名称。
+- 自动生成封面、目录、“第 X 章 / X.Y / X.Y.Z”编号和附录字母编号。
+- TeX 正文章节拆分到 `data/`，附录拆分到 `appendix/`，便于维护大型文档。
+- DOCX 包含原生 Word 目录字段；打开文档后右键目录并选择“更新整个目录”。
 
-Bib 路径相对于单个 Markdown 文件所在目录；目录输入时相对于输入目录。转换结果分别
-使用 `\cite{zhang2024}`、`\cite{li2023,wang2022}`，并把 Bib 文件复制到输出目录，
-统一命名为 `references.bib`。只支持上述方括号形式，不支持裸 `@key`、页码、前后缀
-或多个 Bib 文件。
+### 表格、图片、引用与脚注
 
-出现引用但未声明 `bibliography`、Bib 文件不可读或格式错误、存在重复 key、引用 key
-不存在时，转换会在写出 tex/PDF、图片或分章文件前停止。Bib 中未引用的条目允许保留，
-生成的参考文献表只包含正文实际引用的条目。
+- GFM 管道表格，以及 `Table:`、`表：`、表后 `: 标题`形式的表题。
+- 本地图片会复制到 `figures/`，同名文件自动去重；远程或缺失图片保留原路径并告警。
+- TeX 支持 `{#fig:id}` / `{@fig:id}` 形式的图、表、章节交叉引用。
+- TeX 支持 front matter 声明单个 BibTeX 文件，以及 `[@key]` / `[@a; @b]` 文献引用。
+- `[^id]:(注释内容)` 生成 TeX 脚注；DOCX 和表格单元格降级为括号内联注释。
 
-## tex 输出布局（分章 + 图片）
+完整写法、边界条件和不支持项请查阅 [Markdown 扩展标记使用说明](docs/markdown-extensions.md)。
 
-`tex` 子命令生成的是一个主 `.tex` 文件，正文按章拆分为子文件，主文件用 `\input{...}` 按序引用：
+## TeX / PDF 依赖
 
-```
-out/
-├── main.tex                  # 主文件：封面/摘要/前置内容 + \input 引用
-├── data/                     # 正文章节（research: chapterNN.tex；official: sectionNN.tex）
-│   ├── chapter01.tex
-│   └── chapter02.tex
-├── appendix/                 # 附录章节（仅 research，<!-- [附录] --> 之后）
-│   └── appendix01.tex
-├── references.bib            # 有文献引用时，从 front matter 声明的 Bib 文件复制
-└── figures/                  # markdown 引用的本地图片复制至此，引用路径自动改写
-```
+生成 `.tex` 本身不需要外部转换工具。完成 TeX 输出后，mdx 会按以下顺序尝试生成 PDF：
 
-- research 按 `\chapter`（H1/H2）拆分；official 按 H2（"一、"级节）拆分。摘要、版本变更记录、参考文献等留在主文件。
-- 图片语法 `![替代文本](路径)`：独占一段时输出 `figure` 环境（`\includegraphics[width=\textwidth]`，替代文本作为 `\caption`）；行内混排时输出裸 `\includegraphics`。本地图片复制到 `figures/` 并把引用改写为 `figures/<文件名>`（同名不同源自动加序号后缀）；远程 URL 与找不到的文件保持原样并告警。docx 与表格单元格内暂不支持插图，降级为替代文本。
+1. 优先检测 `xelatex`；
+2. 不可用时回退到 `tectonic`；
+3. 两者都不存在时保留 `.tex`，转换仍成功。
 
-TeX 输出完成后会自动检测 `tectonic`，没有则检测 `xelatex`。检测到可用引擎时会直接生成同名 `.pdf`，并清理同名 LaTeX 中间产物（如 `.aux`、`.log`、`.toc`、`.bcf`、`.run.xml` 等）。常规输出目录最终只需要保留 `.md`、`.tex`、`.cls` 和 `.pdf`；有文献引用时还会保留复制后的 `references.bib`。
+有 BibTeX 引用且使用 XeLaTeX 时，系统还应提供 `biber`。TeX 样式依赖常见中文字体；若指定字体不存在，内置类会尝试 fallback 字体。
 
-## 字体
-
-如果系统未安装下面任何字体，docx 端只是写入字体名（Word 端找不到时回退到默认字体）；tex 端通过 `\IfFontExistsTF` 宏自动尝试 fallback 字体。建议按需安装。
-
-**公文样式**：
-
-- 仿宋_GB2312（FangSong_GB2312） — 正文、段落、表格、列表
-- 黑体（SimHei / FZHei-B01） — 二级标题
-- 楷体_GB2312（KaiTi_GB2312 / KaiTi） — 三级标题
-- 方正小标宋简体（FZXiaoBiaoSong-B05） — 一级标题（公文红头）
-
-**研究报告样式**：
-
-- 仿宋_GB2312 / FZShuSong-Z01 — 正文
-- 黑体 / FZHei-B01 — 章节标题
-- 方正小标宋简体 / FZXiaoBiaoSong-B05 — 封面标题
+| 输出 | 转换阶段依赖 | 可选 PDF 依赖 |
+|---|---|---|
+| `docx official` | 无 | — |
+| `docx research` | 无 | — |
+| `tex official` | 无 | XeLaTeX 或 Tectonic；文献引用建议 Biber |
+| `tex research` | 无 | XeLaTeX 或 Tectonic；文献引用建议 Biber |
 
 ## Markdown 支持范围
 
-扩展标记的完整使用约定见 [docs/markdown-extensions.md](docs/markdown-extensions.md)，撰写新文档时请遵循。
+mdx 使用面向本项目场景的 Rust 原生解析器，而不是完整 CommonMark/Pandoc 实现。
 
-当前 Markdown 解析为 Rust 内生实现，覆盖本项目常用子集：标题、段落、基础行内格式、普通链接、图片、行内脚注、Pandoc 方括号文献引用、列表行、fenced code block、GFM 管道表格、pandoc 风格表格标题，以及 research 区段标记。
+已覆盖：
 
-尚未等价覆盖 pandoc 全量语法，例如数学公式、引用式脚注（`[^id]` + 单独定义行）、blockquote、raw LaTeX/HTML、复杂嵌套列表、多段落列表、复杂表格和完整 inline 嵌套规则。
+- 标题、段落、基础行内格式、链接与图片；
+- 单行列表、fenced code block、GFM 管道表格；
+- 行内脚注、交叉引用、Pandoc 方括号文献引用；
+- research 区段标记、封面字段与目录输入合并。
 
-## 行内脚注（`tex`）
+尚未完整覆盖：
 
-正文中写 `[^id]:(注释内容)`，冒号与括号均兼容全角（`：` / `（）`）：
+- 数学公式、引用式脚注、blockquote、raw LaTeX/HTML；
+- 多段落或复杂嵌套列表、合并单元格等复杂表格；
+- Pandoc/CommonMark 的全部行内嵌套规则。
 
-```markdown
-这是一段正文[^1]:(第一条注释)继续正文。
+在生产文档中使用前，请以 [语法文档](docs/markdown-extensions.md) 为准，并先转换一个最小样例确认版式。
+
+## TeX 输出结构
+
+```text
+output/
+├── report.tex               # 主文件：封面、摘要、目录等
+├── md2tex.cls               # research 样式资源
+├── data/                    # 正文章节
+│   ├── chapter01.tex
+│   └── chapter02.tex
+├── appendix/                # 附录章节（research）
+│   └── appendix01.tex
+├── references.bib           # 使用文献引用时生成
+├── figures/                 # 本地图片副本
+└── report.pdf               # 检测到可用 TeX 引擎时生成
 ```
 
-- `tex official` / `tex research`：转为 `\footnote{...}`，页脚自动编号，`id` 仅作占位、不参与编号。
-- 表格单元格内（`tabular` / `longtblr` 中 `\footnote` 不生效）降级为全角括号内联注释 `（注释内容）`。
-- `docx`：暂不生成 Word 脚注部件，同样降级为全角括号内联注释。
-- 只有 `[^id]` 而没有 `:(内容)` 时不识别为脚注，按普通文字原样输出。
-
-## 区段标记（`research`）
-
-研究报告 docx / tex 支持 markdown 行内 HTML 注释作为区段切换标记：
-
-```markdown
-<!-- [摘要] -->        # 进入摘要段；此后段落不计入章节计数
-<!-- [版本变更记录] --> # 进入版本变更记录段；提取到目录前单独输出
-<!-- [正文] -->        # 恢复正常 "第X章" 编号
-<!-- [参考文献] -->     # 进入参考文献段；不编号
-<!-- [附录] -->        # 进入附录段；后续 H2 编号切换为 "附录 A / B / ..."
-                      # （若附录用 H1 开章，如 "# 附录A ..."，则 H1 为附录章，H2 起下移为节）
-```
-
-如果文档不带任何标记，所有 H2 按 `第一章 / 第二章 / ...` 顺序编号。
-
-## 表格标题（`tex research`）
-
-研究报告 tex 支持 pandoc 常用表格标题语法：
-
-```markdown
-Table: 实验结果
-
-| 指标 | 数值 |
-|---|---|
-| A | 1.0 |
-```
-
-也支持表后标题：
-
-```markdown
-| 指标 | 数值 |
-|---|---|
-| A | 1.0 |
-
-: 实验结果
-```
-
-中文写法 `表: 标题` / `表：标题` 也可识别。输出会生成 `longtblr` 的 `caption={...}`。
-带编号的标记（`表1：标题`、`表E.1：标题`、`Table 1: 标题`）以及表题开头残留的
-编号（`: 4.6 标题`）会被剥除，编号统一由 LaTeX 表格计数器自动生成。
-
-## 封面字段（`tex research`）
-
-研究报告 tex 的封面包含：密级、文件类型、文件编号、文件版本号、文件名称、
-撰写单位、撰写时间（到月）。在 markdown 文件（目录模式为排序后的第一个文件）
-顶部用 front matter 提供：
-
-```markdown
----
-密级: 内部
-文件类型: 技术报告
-文件编号: XX-2026-001
-版本: V2.1
-撰写单位: 某研究所
-撰写时间: 2026-07
----
-```
-
-键名支持中英文冒号；`版本`/`单位`/`时间`/`标题` 可替代 `文件版本号`/`撰写单位`/
-`撰写时间`/`文件名称`。`标题`（或 `文件名称`）会覆盖第一个 `#` 标题作为文件名称。
-缺省值：密级"公开"、文件类型"研究报告"、版本"V1.0"、单位"某某单位"、撰写时间取
-编译时的当前年月；`撰写时间` 支持 `2026-07` / `2026/7` / `2026年7月` 写法。
-
-## 标题映射
-
-| markdown | 公文 docx / tex | 研究报告 docx | 研究报告 tex |
-|---|---|---|---|
-| `#` | 居中大标题（方正小标宋简体） | 封面标题 | 封面标题 `\papertitle` |
-| `##` | "一、X"（黑体） | "第X章 X"（Heading1） | `\chapter{}` |
-| `###` | "（一）X"（楷体） | "X.Y X"（Heading2） | `\section{}` |
-| `####` | "1.X"（仿宋） | "X.Y.Z X"（Heading3） | `\subsection{}` |
-| `#####` | "(1)X"（仿宋粗体） | — | `\subsubsection{}` |
-
-公文 4 种编号格式（"一、（一）1.(1)"）以及 6 级列表前缀循环
-（①②③ → ⑴⑵⑶ → a.b.c. → I.II.III. → (A)(B) → 1)2)）在 docx / tex 两个 emitter 中输出一致。
-
-## 示例
+## 开发与验证
 
 ```bash
-# 公文
-mdx docx 通知.md --style official -o 通知.docx
-mdx tex  通知.md --style official -o 通知.tex
-# 若系统存在 tectonic 或 xelatex，会自动生成 通知.pdf
-
-# 研究报告（单文件）
-mdx docx 报告.md --style research -o 报告.docx
-mdx tex  报告.md --style research -o 报告.tex
-# 若系统存在 tectonic 或 xelatex，会自动生成 报告.pdf
-
-# 研究报告（多文件，按文件名排序合并）
-mdx docx ./chapters --style research -o 报告.docx
-mdx tex  ./chapters --style research -o 报告.tex
-
-# 研究报告 tex 自定义模板
-mdx tex 报告.md --style research --template my_template.tex -o 报告.tex
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+cargo build --release --locked
 ```
 
-研究报告 docx 包含原生 Word 目录字段，**Word 中打开后**右键目录 →
-"更新整个目录"即可填出条目。
+项目当前包含 146 个单元测试，覆盖解析、编号、TeX 转义、表格、文献与交叉引用校验、资源渲染、章节拆分及 DOCX 生成逻辑。GitHub Actions 会在 Linux、Windows 和 macOS 上构建，并在 Linux 上执行完整质量检查。
 
-## 项目结构
+## 路线图
 
-```
-mdx/
-├── Cargo.toml
-├── README.md
-├── resources/
-│   ├── official/official.cls          # 公文 LaTeX 类
-│   └── research/                       # 研究报告 LaTeX 资源
-│       ├── template.tex
-│       └── md2tex.cls
-└── src/
-    ├── main.rs cli.rs input.rs parser.rs
-    ├── common/         # IR + 引号/标题/编号/表格/标记 共享逻辑
-    ├── docx_official.rs
-    ├── docx_research.rs
-    ├── tex_official.rs
-    ├── tex_research/   # research tex 资源/模板包装
-    └── tex_research_emitter.rs
-```
+- [ ] 数学公式与更完整的脚注语法
+- [ ] 复杂嵌套列表和多段落列表项
+- [ ] 更丰富的 DOCX 图片及交叉引用支持
+- [ ] 可复现的视觉回归样例与输出预览
 
-## 测试
+欢迎先提交 [Feature request](https://github.com/billowsand/mdx/issues/new/choose) 讨论设计与兼容性。
 
-```bash
-cargo test
-```
+## 参与项目
 
-覆盖 parser、numbering、heading 清理、tex 转义、表格 caption、longtblr、模板渲染、biblatex 清理、research tex emitter、研报 docx 切分等。
+- 问题与功能建议：使用仓库中的 Issue 表单；
+- 代码贡献：阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；
+- 安全漏洞：遵循 [SECURITY.md](SECURITY.md) 私下报告；
+- 版本变化：参见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。

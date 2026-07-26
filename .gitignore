@@ -1,6 +1,33 @@
-/target
-Cargo.lock
-docs/
-examples/
+/target/
 *.log
-.claude/
+
+# Local editor / agent state
+.claude/settings.local.json
+docs/superpowers/plans/
+
+# Curated public examples only; keep local/generated fixtures out of Git.
+examples/*
+!examples/official.md
+!examples/research.md
+
+# Generated document artifacts
+examples/appendix/
+examples/data/
+examples/figures/
+examples/*.cls
+examples/*.tex
+examples/references.bib
+
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.docx
+*.fdb_latexmk
+*.fls
+*.out
+*.pdf
+*.run.xml
+*.synctex.gz
+*.toc
+*.xdv

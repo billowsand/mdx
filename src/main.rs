@@ -24,7 +24,11 @@ fn main() {
 fn run() -> Result<()> {
     let args = Cli::parse();
     match args.command {
-        Format::Docx { input, style, output } => match style {
+        Format::Docx {
+            input,
+            style,
+            output,
+        } => match style {
             Style::Official => docx_official::run(&input, output.as_deref()),
             Style::Research => docx_research::run(&input, output.as_deref()),
         },
@@ -40,9 +44,7 @@ fn run() -> Result<()> {
                 }
                 tex_official::run(&input, output.as_deref())
             }
-            Style::Research => {
-                tex_research::run(&input, output.as_deref(), template.as_deref())
-            }
+            Style::Research => tex_research::run(&input, output.as_deref(), template.as_deref()),
         },
     }
 }

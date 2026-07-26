@@ -375,8 +375,8 @@ mod tests {
     #[test]
     fn footnote_inside_italic_parses_as_footnote() {
         // 斜体与脚注在同一段时，脚注先于斜体匹配，所以需要斜体不在脚注左右两侧被切断。
-        let inlines = parse("斜体中[^f]:(脚注)嵌套", ); // 单独测试脚注 + 斜体分段行为
-        // 期望：脚注独立匹配，前后是普通文本
+        let inlines = parse("斜体中[^f]:(脚注)嵌套"); // 单独测试脚注 + 斜体分段行为
+                                                      // 期望：脚注独立匹配，前后是普通文本
         assert_eq!(
             inlines,
             vec![
@@ -391,7 +391,10 @@ mod tests {
     fn italic_wraps_text_with_internal_format() {
         // 斜体内部如果出现裸文本（无内嵌格式），整段被识别为 Italic
         let inlines = parse("*整段斜体*");
-        assert_eq!(inlines, vec![Inline::Italic(vec![Inline::Text("整段斜体".into())])]);
+        assert_eq!(
+            inlines,
+            vec![Inline::Italic(vec![Inline::Text("整段斜体".into())])]
+        );
     }
 
     #[test]

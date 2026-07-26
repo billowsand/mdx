@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "mdx")]
-#[command(version, about = "Unified markdown converter: docx/tex × official/research")]
-#[command(long_about = r#"统一 markdown 转换工具，覆盖 (docx | tex) × (official | research) 四种组合。
+#[command(version, about = "将 Markdown 转换为中文公文或研究报告（DOCX/TeX）")]
+#[command(
+    long_about = r#"统一 markdown 转换工具，覆盖 (docx | tex) × (official | research) 四种组合。
 
 输入可以是单个 .md 文件，也可以是目录（按文件名升序合并所有 .md）。
 
@@ -17,7 +18,8 @@ use std::path::PathBuf;
   mdx docx ./chapters --style research -o paper.docx
   mdx tex  report.md --style official -o report.tex
   mdx tex  ./chapters --style research -o paper.tex
-"#)]
+"#
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Format,
