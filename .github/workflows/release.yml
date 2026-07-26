@@ -38,7 +38,7 @@ jobs:
           fi
           echo "version=${manifest_version}" >> "$GITHUB_OUTPUT"
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16, resolves `toolchain:` channel
         with:
           components: rustfmt, clippy
       - name: Run release checks
@@ -76,7 +76,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust target
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16, resolves `toolchain:` channel
         with:
           targets: ${{ matrix.target }}
       - name: Build
