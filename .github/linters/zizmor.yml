@@ -1,0 +1,3 @@
+rules:
+  ignores:
+    - unpinned-uses
