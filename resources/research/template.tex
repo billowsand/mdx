@@ -15,6 +15,10 @@ $else$
 \newcommand{\papertitle}{文档标题}
 $endif$
 \newcommand{\securitylevel}{$security$}
+% 保密年限：与密级分列两个变量，非空时以五角星（pifont 的 \ding{72}）连接
+\newcommand{\securityyears}{$securityyears$}
+\newcommand{\securitymark}{%
+  \securitylevel\ifdefempty{\securityyears}{}{\ding{72}\securityyears}}
 \newcommand{\doctype}{$doctype$}
 \newcommand{\docnumber}{$docnumber$}
 \newcommand{\docversion}{$docversion$}
@@ -38,7 +42,7 @@ $endif$
 
   % 顶部信息栏：密级 / 编号居首行，版本次之，通栏细线收束
   {\noindent\heiti\enhei\zihao{-4}%
-    密级：\securitylevel\hfill \ifdefempty{\docnumber}{}{编号：\docnumber}\par}
+    密级：\securitymark\hfill \ifdefempty{\docnumber}{}{编号：\docnumber}\par}
   \vspace{4pt}
   {\noindent\heiti\enhei\zihao{-4}版本：\docversion\par}
   \vspace{4pt}

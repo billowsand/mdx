@@ -2,6 +2,8 @@
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Metadata {
     pub security: Option<String>,
+    /// 保密年限，与密级分列两个变量；排版时以五角星连接（如 机密★5年）
+    pub security_years: Option<String>,
     pub doc_type: Option<String>,
     pub doc_number: Option<String>,
     pub version: Option<String>,
@@ -44,6 +46,9 @@ pub fn parse(content: &str) -> (Metadata, String) {
         }
         match key.trim() {
             "密级" | "security" => metadata.security = Some(value.into()),
+            "年限" | "保密年限" | "保密期限" | "years" => {
+                metadata.security_years = Some(value.into())
+            }
             "文件类型" | "类型" | "doctype" => metadata.doc_type = Some(value.into()),
             "文件编号" | "编号" | "number" => metadata.doc_number = Some(value.into()),
             "文件版本号" | "版本" | "version" => metadata.version = Some(value.into()),
@@ -78,6 +83,23 @@ mod tests {
         assert_eq!(meta.bibliography.as_deref(), Some("refs/library.bib"));
         assert_eq!(meta.security.as_deref(), Some("内部"));
         assert_eq!(body, "# 标题");
+    }
+
+    #[test]
+    fn parses_security_and_years_as_separate_fields() {
+        let md = "---\n密级: 机密\n年限: 5年\n---\n# 标题\n";
+        let (meta, _body) = parse(md);
+        assert_eq!(meta.security.as_deref(), Some("机密"));
+        assert_eq!(meta.security_years.as_deref(), Some("5年"));
+    }
+
+    #[test]
+    fn security_years_accepts_aliases() {
+        for key in ["年限", "保密年限", "保密期限", "years"] {
+            let md = format!("---\n{}: 长期\n---\n# 标题\n", key);
+            let (meta, _body) = parse(&md);
+            assert_eq!(meta.security_years.as_deref(), Some("长期"), "键 {}", key);
+        }
     }
 
     #[test]

@@ -245,8 +245,10 @@ fn normalize_cover_date(raw: &str) -> String {
 ///
 /// 这里不重新实现完整 pandoc template 语言，只覆盖当前内置模板与常见外部模板
 /// 使用到的 `$body$`、`$title$`、`$if(title)$...$else$...$endif$`，以及封面字段
-/// `$security$` / `$doctype$` / `$docnumber$` / `$docversion$` / `$institution$` /
-/// `$submitdate$`。
+/// `$security$` / `$securityyears$` / `$doctype$` / `$docnumber$` / `$docversion$` /
+/// `$institution$` / `$submitdate$`。
+///
+/// 密级与年限是两个独立变量，星号连接由模板负责（见 template.tex 的 `\ding{72}`）。
 fn render_template(
     template: &str,
     body: &str,
@@ -296,6 +298,8 @@ fn render_template(
     rendered = rendered.replace("$body$", body);
     rendered = rendered.replace("$title$", escaped_title.as_deref().unwrap_or(""));
     rendered = rendered.replace("$security$", &field(cover.security.as_ref(), "公开"));
+    // 年限缺省为空：模板据此决定是否输出 "★年限"
+    rendered = rendered.replace("$securityyears$", &field(cover.security_years.as_ref(), ""));
     rendered = rendered.replace("$doctype$", &field(cover.doc_type.as_ref(), "研究报告"));
     rendered = rendered.replace("$docnumber$", &field(cover.doc_number.as_ref(), ""));
     rendered = rendered.replace("$docversion$", &field(cover.version.as_ref(), "V1.0"));
@@ -429,6 +433,7 @@ mod tests {
         let template = "$security$|$doctype$|$docnumber$|$docversion$|$institution$|$submitdate$";
         let cover = CoverInfo {
             security: Some("内部".into()),
+            security_years: None,
             doc_type: Some("技术报告".into()),
             doc_number: Some("XX-2026-001".into()),
             version: Some("V2.1".into()),
@@ -451,6 +456,42 @@ mod tests {
         assert_eq!(
             rendered,
             r"公开|研究报告||V1.0|某某单位|\the\year 年 \the\month 月"
+        );
+    }
+
+    #[test]
+    fn template_renders_security_years_separately() {
+        let template = "$security$/$securityyears$";
+        let cover = CoverInfo {
+            security: Some("机密".into()),
+            security_years: Some("5年".into()),
+            ..CoverInfo::default()
+        };
+        let rendered = render_template(template, "", None, &cover, false);
+        assert_eq!(rendered, "机密/5年");
+    }
+
+    #[test]
+    fn template_security_years_defaults_to_empty() {
+        // 年限缺省为空串，模板据此不输出五角星
+        let template = "$security$/$securityyears$";
+        let rendered = render_template(template, "", None, &CoverInfo::default(), false);
+        assert_eq!(rendered, "公开/");
+    }
+
+    #[test]
+    fn builtin_template_joins_security_and_years_with_ding() {
+        // 内置模板：密级与年限之间使用 pifont 的 \ding{72}
+        let cover = CoverInfo {
+            security: Some("机密".into()),
+            security_years: Some("5年".into()),
+            ..CoverInfo::default()
+        };
+        let rendered = render_template(resources::TEMPLATE_TEX, "", None, &cover, false);
+        assert!(rendered.contains("\\ding{72}"), "{rendered}");
+        assert!(
+            rendered.contains("\\newcommand{\\securityyears}{5年}"),
+            "{rendered}"
         );
     }
 

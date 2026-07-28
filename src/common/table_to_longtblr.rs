@@ -11,6 +11,10 @@ const NUMERIC_RATIO_THRESHOLD: f64 = 0.8;
 const MIN_WIDTH_RATIO: f64 = 0.8;
 const MAX_WIDTH_RATIO: f64 = 4.0;
 const CJK_WIDTH_FACTOR: f64 = 1.8;
+/// 窄数字列：表头以外全是不超过这么多位的纯数字（如序号列 1/2/…/99）
+const NARROW_NUMERIC_MAX_DIGITS: usize = 2;
+/// 窄数字列的固定列宽，不参与 X 列的按比例伸缩
+const NARROW_NUMERIC_WIDTH: &str = "2em";
 
 /// 计算字符串的显示宽度（考虑中文字符）
 fn calc_display_width(s: &str) -> f64 {
@@ -83,6 +87,14 @@ fn has_sentence_punctuation(s: &str) -> bool {
     false
 }
 
+/// 是否为"不超过 NARROW_NUMERIC_MAX_DIGITS 位的纯数字"，如 `1`、`42`
+fn is_short_digits(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty()
+        && t.chars().count() <= NARROW_NUMERIC_MAX_DIGITS
+        && t.chars().all(|c| c.is_ascii_digit())
+}
+
 #[derive(Debug, Clone)]
 struct ColumnStats {
     total_width: f64,
@@ -93,6 +105,8 @@ struct ColumnStats {
     has_punctuation: bool,
     avg_width: f64,
     is_numeric: bool,
+    /// 表头以外全是 2 位以内纯数字（序号列一类）：走固定列宽
+    is_narrow_numeric: bool,
 }
 
 impl ColumnStats {
@@ -106,6 +120,7 @@ impl ColumnStats {
             has_punctuation: false,
             avg_width: 0.0,
             is_numeric: false,
+            is_narrow_numeric: false,
         }
     }
 }
@@ -113,10 +128,16 @@ impl ColumnStats {
 /// 分析列内容特征
 fn analyze_column(cells: &[String]) -> ColumnStats {
     let mut stats = ColumnStats::new();
+    // 传入的 cells 不含表头，因此这里天然只看表体
+    let mut all_short_digits = true;
 
     for cell_text in cells {
         if cell_text.is_empty() {
             continue;
+        }
+
+        if !is_short_digits(cell_text) {
+            all_short_digits = false;
         }
 
         let width = calc_display_width(cell_text);
@@ -151,6 +172,9 @@ fn analyze_column(cells: &[String]) -> ColumnStats {
     // 判断是否为数字列
     stats.is_numeric = stats.count > 0
         && (stats.numeric_count as f64 / stats.count as f64) >= NUMERIC_RATIO_THRESHOLD;
+
+    // 窄数字列：表体全是 2 位以内纯数字（空单元格不计）
+    stats.is_narrow_numeric = stats.count > 0 && all_short_digits;
 
     stats
 }
@@ -220,6 +244,13 @@ fn generate_smart_colspec(columns_stats: &[ColumnStats]) -> String {
     for (i, stats) in columns_stats.iter().enumerate() {
         let align = determine_alignment(stats);
         let ratio = ratios[i];
+
+        // 窄数字列（序号列一类）：固定 2em，不参与 X 列的按比例伸缩，
+        // 余下的列仍按原比例算法分配剩余宽度
+        if stats.is_narrow_numeric {
+            specs.push(format!("Q[{},wd={}]", align, NARROW_NUMERIC_WIDTH));
+            continue;
+        }
 
         // 生成 X[ratio, align] 格式
         let spec = if ratio == 1.0 {
@@ -359,13 +390,18 @@ pub fn emit_longtblr(rows: &[Vec<String>], caption: Option<&str>, label: Option<
         let align = determine_alignment(stats);
         let align_str = if align == 'c' { "居中" } else { "靠左" };
         debug_info.push_str(&format!(
-            "%% 列{}: 平均宽度={:.1}, 最大宽度={:.1}, 数字列={}, 有标点={} → 对齐={}\n",
+            "%% 列{}: 平均宽度={:.1}, 最大宽度={:.1}, 数字列={}, 有标点={} → 对齐={}{}\n",
             i + 1,
             stats.avg_width,
             stats.max_width,
             if stats.is_numeric { "是" } else { "否" },
             if stats.has_punctuation { "是" } else { "否" },
-            align_str
+            align_str,
+            if stats.is_narrow_numeric {
+                format!(", 窄数字列 → 固定列宽={}", NARROW_NUMERIC_WIDTH)
+            } else {
+                String::new()
+            }
         ));
     }
 
@@ -447,6 +483,56 @@ mod tests {
         let cells = vec!["123".to_string(), "456".to_string(), "789".to_string()];
         let stats = analyze_column(&cells);
         assert!(stats.is_numeric);
+    }
+
+    #[test]
+    fn narrow_numeric_column_uses_fixed_width() {
+        // 序号列：表头以外全是 2 位以内纯数字 → 固定 2em；其余列仍走 X 比例
+        let rows = vec![
+            vec!["序号".to_string(), "说明".to_string()],
+            vec!["1".to_string(), "第一条说明文字，较长。".to_string()],
+            vec!["12".to_string(), "第二条说明文字，同样较长。".to_string()],
+        ];
+        let result = emit_longtblr(&rows, None, None);
+        assert!(result.contains("Q[c,wd=2em]"), "{result}");
+        assert!(result.contains(" X["), "第二列应仍为 X 列: {result}");
+    }
+
+    #[test]
+    fn three_digit_column_keeps_ratio_width() {
+        // 出现 3 位数字即不算窄数字列，仍按原比例算法分配
+        let rows = vec![
+            vec!["数量".to_string(), "说明".to_string()],
+            vec!["1".to_string(), "文字".to_string()],
+            vec!["123".to_string(), "文字".to_string()],
+        ];
+        let result = emit_longtblr(&rows, None, None);
+        assert!(!result.contains("wd=2em"), "{result}");
+    }
+
+    #[test]
+    fn non_digit_content_is_not_narrow_numeric() {
+        // 带单位/小数点的数字不算纯数字，不走固定列宽
+        let rows = vec![
+            vec!["比例".to_string(), "说明".to_string()],
+            vec!["5%".to_string(), "文字".to_string()],
+            vec!["1.5".to_string(), "文字".to_string()],
+        ];
+        let result = emit_longtblr(&rows, None, None);
+        assert!(!result.contains("wd=2em"), "{result}");
+    }
+
+    #[test]
+    fn narrow_numeric_ignores_header_and_empty_cells() {
+        // 表头再宽也不影响判定；空单元格跳过
+        let rows = vec![
+            vec!["很长的表头文字说明".to_string(), "说明".to_string()],
+            vec!["1".to_string(), "文字".to_string()],
+            vec!["".to_string(), "文字".to_string()],
+            vec!["99".to_string(), "文字".to_string()],
+        ];
+        let result = emit_longtblr(&rows, None, None);
+        assert!(result.contains("Q[c,wd=2em]"), "{result}");
     }
 
     #[test]

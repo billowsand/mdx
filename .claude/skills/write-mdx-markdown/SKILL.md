@@ -45,7 +45,8 @@ mdx tex  <input> --style research   # 研究报告 tex（自动编 PDF）
 
 ```markdown
 ---
-密级: 内部
+密级: 机密
+年限: 5年
 文件类型: 技术报告
 文件编号: XX-2026-001
 版本: V1.0
@@ -56,7 +57,8 @@ bibliography: refs/library.bib
 ---
 ```
 
-- 键名（含英文别名）：`密级`/`security`、`文件类型`|`类型`/`doctype`、`文件编号`|`编号`/`number`、`文件版本号`|`版本`/`version`、`撰写单位`|`单位`/`institution`、`撰写时间`|`时间`|`日期`/`date`、`文件名称`|`标题`/`title`、`bibliography`。
+- 键名（含英文别名）：`密级`/`security`、`年限`|`保密年限`|`保密期限`/`years`、`文件类型`|`类型`/`doctype`、`文件编号`|`编号`/`number`、`文件版本号`|`版本`/`version`、`撰写单位`|`单位`/`institution`、`撰写时间`|`时间`|`日期`/`date`、`文件名称`|`标题`/`title`、`bibliography`。
+- `密级` 与 `年限` 分列两个字段，封面排为 `密级：机密★5年`（tex 用 pifont 的 `\ding{72}`）；只写 `密级` 时无星号，`年限` 请自带单位（写 `5年` 而非 `5`）。
 - `撰写时间` 接受 `2026-07`/`2026/7`/`2026.07`/`2026年7月`，统一输出"YYYY 年 M 月"；缺省取编译当月。
 - **`---` 必须闭合**，否则整块按普通正文处理。封面字段仅 research 生效；`bibliography` 两种 tex 样式都读。目录输入时 front matter 写在排序后的第一个文件。
 

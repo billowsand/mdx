@@ -21,7 +21,7 @@
 \RequirePackage{xcolor}
 \RequirePackage{booktabs}
 \RequirePackage{array}
-\RequirePackage{pifont}
+\RequirePackage{pifont}   %% \ding{72}：封面"密级★年限"的五角星
 \RequirePackage{refcount}
 \RequirePackage{ifthen}
 \RequirePackage{ragged2e}
