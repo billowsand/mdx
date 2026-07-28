@@ -28,6 +28,8 @@
 \RequirePackage{xcolor}
 \RequirePackage{enumitem}
 \RequirePackage{paralist}
+\RequirePackage{float}      %% figure [H]：图就地排版
+\RequirePackage{longtable}  %% 表格可跨页断开，不为"整表完整"制造空页
 \RequirePackage{hyperref}
 
 %% ============================================================
@@ -131,6 +133,32 @@
 \linespread{1.5}\selectfont
 \setlength{\parindent}{2em}
 \setlength{\parskip}{0pt}
+
+%% ============================================================
+%% 紧缩排版
+%% ============================================================
+%% 页面按内容自然收尾：不再为了撑满版心而拉伸段间距/行间胶水，
+%% 宁可页底留白，也不让某一页的段落被抻长。
+\raggedbottom
+\setlength{\parskip}{0pt plus 0pt minus 0pt}
+
+%% 浮动体（figure [H] 就地排版）前后留白固定且紧凑
+\setlength{\floatsep}{6pt plus 1pt minus 1pt}
+\setlength{\textfloatsep}{8pt plus 1pt minus 1pt}
+\setlength{\intextsep}{6pt plus 1pt minus 1pt}
+\setlength{\abovecaptionskip}{4pt}
+\setlength{\belowcaptionskip}{4pt}
+
+%% longtable 前后留白紧凑，并允许在页内任意行断开
+\setlength{\LTpre}{6pt}
+\setlength{\LTpost}{6pt}
+
+%% 不为避免孤行/表格断开而重排整页：断开的代价远小于抻长版面
+\clubpenalty=150
+\widowpenalty=150
+\displaywidowpenalty=150
+\brokenpenalty=100
+\setlength{\emergencystretch}{1em}
 
 %% ============================================================
 %% 页脚 "— X —"，居中

@@ -411,7 +411,8 @@ impl TexResearchEmitter {
     }
 
     fn emit_figure(&mut self, alt: &str, url: &str, label: Option<&str>) {
-        let mut fig = String::from("\\begin{figure}[htbp]\n\\centering\n");
+        // [H]（float 宏包）：图片就地排版，不漂移到页首/页尾
+        let mut fig = String::from("\\begin{figure}[H]\n\\centering\n");
         fig.push_str(&format!(
             "\\includegraphics[width=\\textwidth]{{{}}}\n",
             escape_href_url(url)
@@ -537,8 +538,15 @@ impl TexResearchEmitter {
     }
 
     fn reset_list(&mut self) {
+        // 列表环境结束后补一个空行：否则紧随其后的正文会被 LaTeX 当成
+        // 同一段延续（paralist 的 asparaenum 尤其明显），首行缩进与段距全乱。
+        let mut closed = false;
         while let Some((_, env)) = self.list_env.pop() {
             self.out.push_str(&format!("\\end{{{}}}\n", env));
+            closed = true;
+        }
+        if closed {
+            self.out.push('\n');
         }
         self.in_list = false;
         self.list_level = 0;
@@ -1149,7 +1157,7 @@ mod tests {
             label: Some("fig:framework".into()),
         }]));
         let body = test_body(e);
-        assert!(body.contains("\\begin{figure}[htbp]"), "got {}", body);
+        assert!(body.contains("\\begin{figure}[H]"), "got {}", body);
         assert!(body.contains("\\centering"));
         assert!(
             body.contains("\\includegraphics[width=\\textwidth]{figs/framework.png}"),
@@ -1362,5 +1370,23 @@ mod tests {
         assert!(main.contains("\\chapter*{版本变更记录}"));
         assert!(main.contains("\\chapter*{参考文献}"));
         assert!(main.contains("文献一"));
+    }
+
+    #[test]
+    fn test_list_env_close_followed_by_blank_line() {
+        // 列表结束后必须空一行，否则后续正文会并入列表最后一项所在段落
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("条目".into())],
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("后续正文".into())]));
+        let (body, _parts) = e.finish();
+        assert!(
+            body.contains("\\end{asparaenum}\n\n后续正文"),
+            "列表环境与后续正文之间缺少空行：\n{}",
+            body
+        );
     }
 }

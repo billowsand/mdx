@@ -168,6 +168,33 @@
 \fi
 
 %% ============================================================
+%% 紧缩排版
+%% ============================================================
+%% 页面按内容自然收尾：不再为了撑满版心而拉伸段间距/行间胶水，
+%% 宁可页底留白，也不让某一页的段落被抻长。
+\raggedbottom
+\setlength{\parskip}{0pt plus 0pt minus 0pt}
+
+%% 浮动体（figure [H] 就地排版）前后留白固定且紧凑
+\setlength{\floatsep}{6pt plus 1pt minus 1pt}
+\setlength{\textfloatsep}{8pt plus 1pt minus 1pt}
+\setlength{\intextsep}{6pt plus 1pt minus 1pt}
+\setlength{\abovecaptionskip}{4pt}
+\setlength{\belowcaptionskip}{4pt}
+
+%% 长表格前后留白紧凑；longtblr/longtable 均可跨页断开，
+%% 不为"整表完整显示"把表推到下一页而留出大片空白。
+\setlength{\LTpre}{6pt}
+\setlength{\LTpost}{6pt}
+
+%% 不为避免孤行/表格断开而重排整页：断开的代价远小于抻长版面
+\clubpenalty=150
+\widowpenalty=150
+\displaywidowpenalty=150
+\brokenpenalty=100
+\setlength{\emergencystretch}{1em}
+
+%% ============================================================
 %% 圆圈数字
 %% ============================================================
 \newcommand{\textcriclednum}[1]{%

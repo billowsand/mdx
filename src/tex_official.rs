@@ -5,7 +5,7 @@
 //! - 标题 H1 居中 方正小标宋简体 二号；H2 黑体 + "一、"；H3 楷体 + "（一）"；
 //!   H4 仿宋 + "1."；H5 仿宋粗体 + "(1)"
 //! - 列表前缀循环 ①②③ → ⑴⑵⑶ → a.b.c. → I.II.III. → (A)(B) → 1)2)
-//! - 表格简单 tabular 全边框
+//! - 表格 longtable 全边框（可跨页断开，表头续页重复）
 //!
 //! 内嵌 `official.cls`，运行时复制到输出目录，供 `xelatex` 编译用。
 
@@ -309,7 +309,8 @@ impl TexEmitter {
     }
 
     fn emit_figure(&mut self, alt: &str, url: &str, label: Option<&str>) {
-        self.out.push_str("\\begin{figure}[htbp]\n\\centering\n");
+        // [H]（float 宏包）：图片就地排版，不漂移到页首/页尾
+        self.out.push_str("\\begin{figure}[H]\n\\centering\n");
         self.out.push_str(&format!(
             "\\includegraphics[width=\\textwidth]{{{}}}\n",
             escape_href_url(url)
@@ -396,15 +397,16 @@ impl TexEmitter {
             .collect::<String>()
             + "|";
 
-        self.out.push_str("\\begin{center}\n");
+        // longtable 而非 tabular：表格可跨页断开，避免整表被推到下一页、
+        // 在上一页留下大片空白或把段落抻长（紧缩排版）
         self.out
-            .push_str(&format!("\\begin{{tabular}}{{{}}}\n\\hline\n", col_spec));
+            .push_str(&format!("\\begin{{longtable}}{{{}}}\n\\hline\n", col_spec));
 
         for (row_idx, row) in rows.iter().enumerate() {
             let cells: Vec<String> = (0..max_cols)
                 .map(|i| {
                     let raw = row.get(i).map(String::as_str).unwrap_or("");
-                    // tabular 内 \footnote 的注释文字不会输出，降级为全角括号内联注释
+                    // 表格内 \footnote 的注释文字不会输出，降级为全角括号内联注释
                     let inlines: Vec<Inline> = crate::common::inline::parse(raw)
                         .into_iter()
                         .map(|ip| match ip {
@@ -422,15 +424,26 @@ impl TexEmitter {
                 .collect();
             self.out.push_str(&cells.join(" & "));
             self.out.push_str(" \\\\\n\\hline\n");
+            // 表头在续页重复
+            if row_idx == 0 {
+                self.out.push_str("\\endhead\n");
+            }
         }
 
-        self.out.push_str("\\end{tabular}\n\\end{center}\n\n");
+        self.out.push_str("\\end{longtable}\n\n");
     }
 
     fn reset_list(&mut self) {
         // 把所有打开的列表环境按从深到浅依次关闭，写到当前 out 末尾。
+        let mut closed = false;
         while let Some((_, env)) = self.list_env.pop() {
             self.out.push_str(&format!("\\end{{{}}}\n", env));
+            closed = true;
+        }
+        // 列表环境结束后补一个空行：否则紧随其后的正文会被 LaTeX 当成
+        // 同一段延续（paralist 的 asparaenum 尤其明显），首行缩进与段距全乱。
+        if closed {
+            self.out.push('\n');
         }
         self.in_list = false;
         self.list_level = 0;
@@ -756,6 +769,24 @@ mod tests {
     }
 
     #[test]
+    fn list_env_close_followed_by_blank_line() {
+        // 列表结束后必须空一行，否则后续正文会并入列表最后一项所在段落
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::List {
+            ordered: false,
+            level: 1,
+            content: vec![Inline::Text("条目".into())],
+        });
+        e.emit_block(&Block::Paragraph(vec![Inline::Text("后续正文".into())]));
+        let body = test_body(e);
+        assert!(
+            body.contains("\\end{asparaenum}\n\n后续正文"),
+            "列表环境与后续正文之间缺少空行：\n{}",
+            body
+        );
+    }
+
+    #[test]
     fn nested_list_renders_inner_env_inside_outer_item() {
         // - 新的第一级
         //   - 新的第二级
@@ -791,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn table_emits_tabular() {
+    fn table_emits_longtable() {
         let mut e = TexEmitter::new();
         e.emit_block(&Block::Table {
             rows: vec![
@@ -801,9 +832,11 @@ mod tests {
             caption: None,
         });
         let body = test_body(e);
-        assert!(body.contains("\\begin{tabular}{|l|l|}"));
+        assert!(body.contains("\\begin{longtable}{|l|l|}"));
         assert!(body.contains("\\textbf{列A}"));
         assert!(body.contains("\\hline"));
+        // 表头在续页重复
+        assert!(body.contains("\\endhead"));
     }
 
     #[test]
@@ -831,7 +864,7 @@ mod tests {
             label: Some("fig:arch".into()),
         }]));
         let body = test_body(e);
-        assert!(body.contains("\\begin{figure}[htbp]"), "got {}", body);
+        assert!(body.contains("\\begin{figure}[H]"), "got {}", body);
         assert!(body.contains("\\centering"));
         assert!(
             body.contains("\\includegraphics[width=\\textwidth]{figs/arch.png}"),

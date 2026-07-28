@@ -1,6 +1,6 @@
 [package]
 name = "mdx"
-version = "2.4.0"
+version = "2.5.0"
 edition = "2021"
 authors = ["marmot"]
 description = "面向中文公文与研究报告的 Markdown 转 DOCX/TeX 命令行工具"
