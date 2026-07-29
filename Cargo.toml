@@ -1,12 +1,12 @@
 [package]
 name = "mdx"
-version = "2.5.1"
+version = "2.6.0"
 edition = "2021"
 authors = ["marmot"]
-description = "面向中文公文与研究报告的 Markdown 转 DOCX/TeX 命令行工具"
+description = "面向中文公文与研究报告的 Markdown 转 DOCX/TeX 桌面及命令行工具"
 license = "MIT"
 readme = "README.md"
-keywords = ["markdown", "docx", "latex", "chinese", "cli"]
+keywords = ["markdown", "docx", "latex", "chinese", "gui"]
 categories = ["command-line-utilities", "text-processing"]
 rust-version = "1.85"
 publish = false
@@ -24,6 +24,15 @@ exclude = [
 name = "mdx"
 path = "src/main.rs"
 
+[[bin]]
+name = "mdx-gui"
+path = "src/bin/mdx-gui.rs"
+required-features = ["gui"]
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:rfd"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 docx-rs = "0.4"
@@ -33,6 +42,8 @@ biblatex = "0.12"
 walkdir = "2"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+eframe = { version = "0.31.1", optional = true }
+rfd = { version = "0.17.2", optional = true }
 
 [profile.release]
 opt-level = 3

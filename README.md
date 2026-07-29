@@ -4,7 +4,7 @@
 
 **面向中文公文与研究报告的 Markdown → DOCX / TeX 转换器**
 
-一次写作，四种专业排版组合。纯 Rust 解析，无需 Pandoc。
+一次写作，四种专业排版组合。提供桌面界面与命令行，纯 Rust 解析，无需 Pandoc。
 
 [![CI](https://github.com/billowsand/mdx/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/billowsand/mdx/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/billowsand/mdx?display_name=tag&sort=semver)](https://github.com/billowsand/mdx/releases/latest)
@@ -25,6 +25,7 @@
 | **TeX / PDF** | 内置公文 LaTeX 类 | `ctexbook` 研报模板、分章输出 |
 
 - **四种输出组合**：`docx/tex × official/research`。
+- **桌面与命令行双入口**：`mdx-gui` 提供文件选择、拖放和任务日志，`mdx` 适合脚本与自动化。
 - **纯 Rust 转换**：转换阶段不依赖 Pandoc；DOCX 输出无运行时外部依赖。
 - **面向中文排版**：内置公文和研究报告常用字体、字号及编号规则。
 - **结构化长文档**：支持目录输入、章节拆分、附录、封面字段和版本记录。
@@ -37,7 +38,10 @@
 
 #### 下载预编译版本（推荐）
 
-从 [GitHub Releases](https://github.com/billowsand/mdx/releases/latest) 下载与你的平台对应的压缩包，解压后把 `mdx`（Windows 为 `mdx.exe`）所在目录加入 `PATH`。
+从 [GitHub Releases](https://github.com/billowsand/mdx/releases/latest) 下载与你的平台对应的压缩包。压缩包包含：
+
+- `mdx-gui`（Windows 为 `mdx-gui.exe`）：双击运行桌面界面；
+- `mdx`（Windows 为 `mdx.exe`）：命令行程序，可将其目录加入 `PATH`。
 
 发布工作流提供 Windows x86_64、Linux x86_64/ARM64、macOS Intel/Apple Silicon 构建及 `SHA256SUMS.txt`。
 
@@ -52,9 +56,33 @@ cargo install --path . --locked
 mdx --version
 ```
 
-也可在项目根目录直接运行 `cargo build --release`，二进制位于 `target/release/`。
+也可在项目根目录直接构建：
+
+```bash
+# 只构建轻量 CLI
+cargo build --release --locked
+
+# 同时构建 CLI 与桌面界面
+cargo build --release --locked --all-features
+```
+
+二进制位于 `target/release/`。GUI 使用内嵌的 `font/sfss.ttf` 显示中文。
 
 ### 第一次转换
+
+#### 桌面界面
+
+运行 `mdx-gui`，选择或拖入 `.md` 文件/目录，然后选择输出格式和文档样式并点击
+“开始转换”。TeX 模式可选择是否调用系统中的 XeLaTeX/Tectonic 同时生成 PDF；
+研究报告 TeX 还可指定自定义模板。转换在后台执行，完成后可直接打开输出位置。
+
+从源码直接启动界面：
+
+```bash
+cargo run --release --bin mdx-gui --features gui
+```
+
+#### 命令行
 
 ```bash
 # 中文公文 DOCX
@@ -172,10 +200,12 @@ output/
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
-cargo build --release --locked
+cargo build --release --locked --all-features
 ```
 
-项目当前包含 146 个单元测试，覆盖解析、编号、TeX 转义、表格、文献与交叉引用校验、资源渲染、章节拆分及 DOCX 生成逻辑。GitHub Actions 会在 Linux、Windows 和 macOS 上构建，并在 Linux 上执行完整质量检查。
+测试覆盖解析、编号、TeX 转义、表格、文献与交叉引用校验、资源渲染、章节拆分、
+DOCX 生成及 GUI 路径处理逻辑。GitHub Actions 会在 Linux、Windows 和 macOS 上构建
+CLI 与 GUI，并在 Linux 上执行完整质量检查。
 
 ## 路线图
 

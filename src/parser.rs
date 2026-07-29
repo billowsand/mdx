@@ -297,9 +297,7 @@ fn indent_to_level(indent: usize) -> u8 {
     }
 }
 
-/// 解析代码块 ```lang
-/// content
-/// ```
+/// 解析以三个反引号包围、可带语言名称的代码块。
 /// 返回 (lang, content) 和结束行之后的索引。
 fn parse_code_block(lines: &[String], start: usize) -> (Option<(Option<String>, String)>, usize) {
     let first = &lines[start];

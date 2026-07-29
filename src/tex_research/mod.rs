@@ -18,7 +18,12 @@ use std::path::{Path, PathBuf};
 use merger::Merger;
 
 /// 入口：调研究报告 tex 转换。input 可以是单 .md 或目录。
-pub fn run(input: &Path, output: Option<&Path>, user_template: Option<&Path>) -> Result<()> {
+pub fn run(
+    input: &Path,
+    output: Option<&Path>,
+    user_template: Option<&Path>,
+    compile_pdf: bool,
+) -> Result<()> {
     let kind = crate::input::classify(input)?;
     let is_dir = kind == crate::input::InputKind::Directory;
 
@@ -47,7 +52,7 @@ pub fn run(input: &Path, output: Option<&Path>, user_template: Option<&Path>) ->
 
     let mut merger = Merger::new();
     merger
-        .process(input, is_dir, user_template, &output_path)
+        .process(input, is_dir, user_template, &output_path, compile_pdf)
         .context("处理失败")?;
 
     println!("[完成] 处理完成! 输出文件: {}", output_path.display());

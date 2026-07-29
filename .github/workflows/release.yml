@@ -81,16 +81,23 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Verify CLI
+        run: cargo build --release --locked --all-features --target ${{ matrix.target }}
+      - name: Verify binaries
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             ./target/${{ matrix.target }}/release/mdx.exe --version
+            test -f ./target/${{ matrix.target }}/release/mdx-gui.exe
           else
             ./target/${{ matrix.target }}/release/mdx --version
+            test -f ./target/${{ matrix.target }}/release/mdx-gui
           fi
       - name: Package Unix archive
         if: matrix.archive == 'tar.gz'
@@ -102,6 +109,7 @@ jobs:
           package="mdx-v${VERSION}-${TARGET}"
           mkdir -p "dist/${package}"
           cp "target/${TARGET}/release/mdx" "dist/${package}/"
+          cp "target/${TARGET}/release/mdx-gui" "dist/${package}/"
           cp README.md LICENSE CHANGELOG.md "dist/${package}/"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
       - name: Package Windows archive
@@ -114,6 +122,7 @@ jobs:
           $package = "mdx-v$env:VERSION-$env:TARGET"
           New-Item -ItemType Directory -Force "dist/$package" | Out-Null
           Copy-Item "target/$env:TARGET/release/mdx.exe" "dist/$package/"
+          Copy-Item "target/$env:TARGET/release/mdx-gui.exe" "dist/$package/"
           Copy-Item -Path README.md, LICENSE, CHANGELOG.md -Destination "dist/$package/"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
       - name: Upload release archive

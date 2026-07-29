@@ -31,6 +31,7 @@ impl Merger {
         is_dir: bool,
         user_template: Option<&Path>,
         output_tex: &Path,
+        compile_pdf: bool,
     ) -> Result<()> {
         // 1. 读取并解析 markdown
         let (markdown_content, doc_title) = if is_dir {
@@ -98,7 +99,9 @@ impl Merger {
         crate::common::parts::write_parts(out_dir, &parts)
             .with_context(|| format!("写入分章部件到 {} 失败", out_dir.display()))?;
 
-        crate::tex_compile::compile_pdf_if_available(output_tex)?;
+        if compile_pdf {
+            crate::tex_compile::compile_pdf_if_available(output_tex)?;
+        }
 
         println!("转换成功: {}", output_tex.display());
         Ok(())
@@ -397,7 +400,7 @@ mod tests {
         .unwrap();
 
         let err = Merger::new()
-            .process(&input, false, None, &output)
+            .process(&input, false, None, &output, false)
             .unwrap_err();
 
         assert!(err.to_string().contains("missing.bib"));

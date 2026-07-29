@@ -44,7 +44,7 @@ fn list_env_name(level: u8) -> &'static str {
 ///
 /// 输出布局：主 tex 文件 + `data/` 下的分节部件（主文件 `\input` 引用）+
 /// `figures/` 下的图片（markdown 引用的本地图片复制至此并改写路径）。
-pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
+pub fn run(input: &Path, output: Option<&Path>, compile_pdf: bool) -> Result<()> {
     let kind = crate::input::classify(input)?;
     let raw = crate::input::collect_raw(input)?;
     let (metadata, content) = crate::common::front_matter::parse(&raw);
@@ -90,7 +90,9 @@ pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
         .with_context(|| format!("复制 official.cls 到 {} 失败", cls_dst.display()))?;
     println!("  已复制 official.cls 到 {}", cls_dst.display());
 
-    crate::tex_compile::compile_pdf_if_available(&output_path)?;
+    if compile_pdf {
+        crate::tex_compile::compile_pdf_if_available(&output_path)?;
+    }
 
     println!("[完成] 转换完成: {}", output_path.display());
     Ok(())
@@ -940,7 +942,7 @@ mod tests {
         let output = dir.path().join("out/report.tex");
         fs::write(&input, "---\nbibliography: missing.bib\n---\n正文 [@a]\n").unwrap();
 
-        let err = run(&input, Some(&output)).unwrap_err();
+        let err = run(&input, Some(&output), false).unwrap_err();
 
         assert!(err.to_string().contains("missing.bib"));
         assert!(!output.exists());
