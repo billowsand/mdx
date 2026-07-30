@@ -100,6 +100,15 @@ mdx tex examples/research.md --style research -o output/research.tex
 
 `<input>` 可以是单个 `.md` 文件，也可以是目录。目录模式会读取顶层 Markdown，并按文件名升序合并；推荐用 `01-intro.md`、`02-body.md` 控制顺序。
 
+省略 `-o` 时，TeX 输出会连同 `data/`、`figures/`、`.cls`、`.bib` 与 PDF 一起收进一个单独的目录，不再散落在当前目录：
+
+| 输入 | 默认 TeX 输出 | 默认 DOCX 输出 |
+|---|---|---|
+| `report.md` | `report/report.tex` | `report.docx` |
+| `chapters/` | `chapters-tex/chapters.tex` | `chapters.docx` |
+
+目录输入的输出目录带 `-tex` 后缀，避免与输入目录同名冲突；DOCX 是自包含单文件，仍直接生成在当前目录。
+
 ## 命令行速查
 
 ```text
@@ -112,7 +121,7 @@ mdx tex  <input> --style <official|research> [-o <output.tex>] [--template <temp
 | `<input>` | Markdown 文件，或包含 Markdown 的目录 |
 | `--style official` | 使用中文公文样式 |
 | `--style research` | 使用研究报告样式 |
-| `-o, --output` | 指定输出路径；省略时按输入名称生成 |
+| `-o, --output` | 指定输出路径；省略时按输入名称生成（TeX 另建同名目录收纳配套文件） |
 | `--template` | 仅 `tex research`：覆盖内置 LaTeX 模板 |
 | `-h, --help` | 查看帮助 |
 | `-V, --version` | 查看版本 |
@@ -180,8 +189,10 @@ mdx 使用面向本项目场景的 Rust 原生解析器，而不是完整 Common
 
 ## TeX 输出结构
 
+主文件与全部配套文件都在同一个目录内，可整体拷走或交付：
+
 ```text
-output/
+report/                      # 默认目录名：文件输入取文件名，目录输入取“目录名-tex”
 ├── report.tex               # 主文件：封面、摘要、目录等
 ├── md2tex.cls               # research 样式资源
 ├── data/                    # 正文章节

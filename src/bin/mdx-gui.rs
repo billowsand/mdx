@@ -147,14 +147,16 @@ impl MdxApp {
         }
     }
 
+    /// 切换格式后重算输出路径。tex 与 docx 的目录布局不同（tex 多一层收纳目录），
+    /// 仅改扩展名会把 docx 留在 tex 的收纳目录里，因此有输入时整体重算。
     fn update_output_extension(&mut self) {
-        if let Some(mut path) = non_empty_path(&self.output) {
-            path.set_extension(self.format.extension());
-            self.output = path.to_string_lossy().into_owned();
-        } else if let Some(input) = non_empty_path(&self.input) {
+        if let Some(input) = non_empty_path(&self.input) {
             self.output = suggested_output(&input, self.format)
                 .to_string_lossy()
                 .into_owned();
+        } else if let Some(mut path) = non_empty_path(&self.output) {
+            path.set_extension(self.format.extension());
+            self.output = path.to_string_lossy().into_owned();
         }
         self.outcome = None;
     }
@@ -474,20 +476,13 @@ fn non_empty_path(value: &str) -> Option<PathBuf> {
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
+/// 默认输出落在输入旁边，命名与目录布局沿用 CLI 规则
+/// （tex 收进单独目录，docx 为同级单文件）。
 fn suggested_output(input: &Path, format: OutputFormat) -> PathBuf {
-    if input.is_dir() {
-        let file_name = input
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("output");
-        input
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(file_name)
-            .with_extension(format.extension())
-    } else {
-        input.with_extension(format.extension())
-    }
+    input
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(mdx::default_output(input, format))
 }
 
 fn ensure_extension(path: &mut PathBuf, extension: &str) {
@@ -531,9 +526,10 @@ mod tests {
             suggested_output(input, OutputFormat::Docx),
             Path::new("reports/source.docx")
         );
+        // tex 连带 data/、figures/、.cls 等，收进 reports/source/ 目录
         assert_eq!(
             suggested_output(input, OutputFormat::Tex),
-            Path::new("reports/source.tex")
+            Path::new("reports/source/source.tex")
         );
     }
 

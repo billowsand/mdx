@@ -13,11 +13,17 @@ use std::path::PathBuf;
   official  公文风格（仿宋/黑体/楷体；"一、（一）1."编号；公文页边距）
   research  研究报告风格（ctexbook 论文模板；"第X章 / X.Y / X.Y.Z"编号；含封面、目录）
 
+默认输出位置（省略 -o 时）：
+  tex 连带 data/、figures/、.cls、.bib 与 PDF，统一收进一个单独目录；
+  docx 是自包含单文件，直接生成在当前目录。
+  report.md   → report/report.tex          report.docx
+  ./chapters  → chapters-tex/chapters.tex  chapters.docx
+
 示例：
   mdx docx report.md --style official -o report.docx
   mdx docx ./chapters --style research -o paper.docx
-  mdx tex  report.md --style official -o report.tex
-  mdx tex  ./chapters --style research -o paper.tex
+  mdx tex  report.md --style official
+  mdx tex  ./chapters --style research
 "#
 )]
 pub struct Cli {
@@ -45,7 +51,7 @@ pub enum Format {
         /// 文档样式
         #[arg(short, long, value_enum)]
         style: Style,
-        /// 输出 .tex 路径（默认按输入名生成）
+        /// 输出 .tex 路径（默认在同名目录下生成，配套文件一并收纳）
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// 仅 research：可选自定义 LaTeX 模板路径（覆盖内置）

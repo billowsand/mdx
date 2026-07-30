@@ -103,20 +103,55 @@ fn merge_dir(dir: &Path) -> Result<String> {
     Ok(merged)
 }
 
-/// 计算默认输出路径（输入是目录则用目录名，单文件则用 stem）
+/// 计算默认输出路径（相对于落地目录）。
+///
+/// tex 会连带产出 `data/`、`appendix/`、`figures/`、`.cls`、`.bib` 以及 PDF，
+/// 散在落地目录里很乱，因此统一收进一个单独的目录：
+/// - 单文件 `report.md` → `report/report.tex`
+/// - 目录 `chapters/`   → `chapters-tex/chapters.tex`（加后缀避免与输入目录同名冲突）
+///
+/// docx 是自包含单文件，仍直接落在落地目录下（`report.docx`）。
 pub fn default_output(input: &Path, ext: &str) -> PathBuf {
     let kind = classify(input).unwrap_or(InputKind::File);
-    let name = match kind {
-        InputKind::Directory => input
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("output"),
-        InputKind::File => input
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("output"),
+    let name = base_name(input, kind);
+    let file = format!("{}.{}", name, ext);
+    match bundle_dir_name(&name, kind, ext) {
+        Some(dir) => PathBuf::from(dir).join(file),
+        None => PathBuf::from(file),
+    }
+}
+
+/// 需要单独收纳配套文件的格式，返回其目录名；自包含格式返回 None。
+fn bundle_dir_name(name: &str, kind: InputKind, ext: &str) -> Option<String> {
+    if !ext.eq_ignore_ascii_case("tex") {
+        return None;
+    }
+    Some(match kind {
+        // 输出目录与输入目录同名会互相覆盖，加 -tex 后缀区分
+        InputKind::Directory => format!("{}-tex", name),
+        InputKind::File => name.to_owned(),
+    })
+}
+
+/// 输出使用的基名：目录取目录名，单文件取 stem。
+/// `.` / `..` 这类相对路径没有可用的 file_name，规范化后再取真实目录名。
+fn base_name(input: &Path, kind: InputKind) -> String {
+    let raw = match kind {
+        InputKind::Directory => input.file_name(),
+        InputKind::File => input.file_stem(),
     };
-    PathBuf::from(format!("{}.{}", name, ext))
+    raw.and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            fs::canonicalize(input).ok().and_then(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_owned)
+                    .filter(|n| !n.is_empty())
+            })
+        })
+        .unwrap_or_else(|| "output".to_owned())
 }
 
 #[cfg(test)]
@@ -132,5 +167,63 @@ mod tests {
         let raw = collect_raw(&md).unwrap();
 
         assert!(raw.starts_with("---\nbibliography: refs.bib\n---"));
+    }
+
+    #[test]
+    fn tex_output_goes_into_its_own_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("report.md");
+        fs::write(&md, "正文\n").unwrap();
+
+        assert_eq!(
+            default_output(&md, "tex"),
+            PathBuf::from("report").join("report.tex")
+        );
+    }
+
+    #[test]
+    fn tex_output_dir_for_input_directory_gets_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let chapters = dir.path().join("chapters");
+        fs::create_dir(&chapters).unwrap();
+        fs::write(chapters.join("01.md"), "正文\n").unwrap();
+
+        assert_eq!(
+            default_output(&chapters, "tex"),
+            PathBuf::from("chapters-tex").join("chapters.tex")
+        );
+    }
+
+    #[test]
+    fn docx_output_stays_a_bare_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("report.md");
+        fs::write(&md, "正文\n").unwrap();
+        let chapters = dir.path().join("chapters");
+        fs::create_dir(&chapters).unwrap();
+        fs::write(chapters.join("01.md"), "正文\n").unwrap();
+
+        assert_eq!(default_output(&md, "docx"), PathBuf::from("report.docx"));
+        assert_eq!(
+            default_output(&chapters, "docx"),
+            PathBuf::from("chapters.docx")
+        );
+    }
+
+    #[test]
+    fn dot_directory_falls_back_to_canonical_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("01.md"), "正文\n").unwrap();
+        let real_name = fs::canonicalize(dir.path())
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        assert_eq!(
+            default_output(&dir.path().join("."), "tex"),
+            PathBuf::from(format!("{real_name}-tex")).join(format!("{real_name}.tex"))
+        );
     }
 }
