@@ -5,7 +5,8 @@
 //! - 标题 H1 居中 方正小标宋简体 二号；H2 黑体 + "一、"；H3 楷体 + "（一）"；
 //!   H4 仿宋 + "1."；H5 仿宋粗体 + "(1)"
 //! - 列表前缀循环 ①②③ → ⑴⑵⑶ → a.b.c. → I.II.III. → (A)(B) → 1)2)
-//! - 表格 longtable 全边框（可跨页断开，表头续页重复）
+//! - 表格 longtblr（tabularray）全边框：自动分析内容决定对齐与列宽，
+//!   支持表题（caption）与 `{#tbl:id}` 锚点，可跨页断开、表头续页重复
 //!
 //! 内嵌 `official.cls`，运行时复制到输出目录，供 `xelatex` 编译用。
 
@@ -63,7 +64,10 @@ pub fn run(input: &Path, output: Option<&Path>, compile_pdf: bool) -> Result<()>
     let mut blocks = parser::parse(&content);
     let citations =
         crate::common::citation::validate(&blocks, metadata.bibliography.as_deref(), base_dir)?;
-    crate::common::crossref::check_or_bail(&blocks, crate::common::crossref::Support::FiguresOnly)?;
+    crate::common::crossref::check_or_bail(
+        &blocks,
+        crate::common::crossref::Support::FiguresAndTables,
+    )?;
 
     let out_dir = output_path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(out_dir)
@@ -149,6 +153,9 @@ struct TexEmitter {
     /// 最近一次 \item 行写入 out 之后的位置；当遇到更深层级时，
     /// 在此位置插入 \begin{...} 把子环境挂在父 \item 之后。
     last_item_end: usize,
+    /// 待挂接到下一个表格的交叉引用锚点（Block::Label 设置）。
+    /// 公文标题无自动编号，标题锚点由 emit_heading 丢弃。
+    pending_label: Option<String>,
 }
 
 impl TexEmitter {
@@ -173,6 +180,7 @@ impl TexEmitter {
             list_level: 0,
             list_env: Vec::new(),
             last_item_end: 0,
+            pending_label: None,
         }
     }
 
@@ -227,16 +235,17 @@ impl TexEmitter {
             } => {
                 self.emit_list_item(*level, content);
             }
-            Block::Table { rows, .. } => {
+            Block::Table { rows, caption } => {
                 self.reset_list();
-                self.emit_table(rows);
+                self.emit_table(rows, caption.as_deref());
             }
             Block::Marker(_) => {
                 // 公文路径不响应区段标记，原样忽略
             }
-            Block::Label(_) => {
-                // 公文标题无自动编号，章节锚点无意义；图片标签直接挂在
-                // Inline::Image 上，不经此块，故整体忽略
+            Block::Label(id) => {
+                // 锚点作用于紧随其后的表格（公文表格经 longtblr caption 获得
+                // 自动编号，可被 {@id} 引用）；标题锚点无编号，emit_heading 丢弃
+                self.pending_label = Some(id.clone());
             }
             Block::CodeBlock { .. } => {
                 // 公文路径暂不支持代码块
@@ -248,6 +257,8 @@ impl TexEmitter {
     }
 
     fn emit_heading(&mut self, level: u8, text: &str) {
+        // 公文标题手工编号、无 LaTeX 计数器，标题锚点无法被引用，直接丢弃
+        self.pending_label.take();
         let escaped = escape_latex(text);
         match level {
             1 => {
@@ -386,53 +397,23 @@ impl TexEmitter {
         self.list_level = level;
     }
 
-    fn emit_table(&mut self, rows: &[Vec<String>]) {
+    fn emit_table(&mut self, rows: &[Vec<String>], caption: Option<&str>) {
         if rows.is_empty() {
             return;
         }
-        let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-        if max_cols == 0 {
+        // 表题尾部锚点（Block::Label → pending_label）
+        let label = self.pending_label.take();
+
+        // 与 research 同一套智能表格：longtblr 全边框、按内容自动分配
+        // X 列宽比例、窄数字列固定 2em、表头黑体居中并续页重复；
+        // 单元格内 \footnote 降级为全角括号内联注释（由 emit_longtblr 处理）
+        let table_latex =
+            crate::common::table_to_longtblr::emit_longtblr(rows, caption, label.as_deref());
+        if table_latex.is_empty() {
             return;
         }
-        let col_spec: String = std::iter::repeat_n('l', max_cols)
-            .map(|c| format!("|{}", c))
-            .collect::<String>()
-            + "|";
-
-        // longtable 而非 tabular：表格可跨页断开，避免整表被推到下一页、
-        // 在上一页留下大片空白或把段落抻长（紧缩排版）
-        self.out
-            .push_str(&format!("\\begin{{longtable}}{{{}}}\n\\hline\n", col_spec));
-
-        for (row_idx, row) in rows.iter().enumerate() {
-            let cells: Vec<String> = (0..max_cols)
-                .map(|i| {
-                    let raw = row.get(i).map(String::as_str).unwrap_or("");
-                    // 表格内 \footnote 的注释文字不会输出，降级为全角括号内联注释
-                    let inlines: Vec<Inline> = crate::common::inline::parse(raw)
-                        .into_iter()
-                        .map(|ip| match ip {
-                            Inline::Footnote(t) => Inline::Text(format!("（{}）", t)),
-                            other => other,
-                        })
-                        .collect();
-                    let body = render_inlines(&inlines);
-                    if row_idx == 0 {
-                        format!("\\textbf{{{}}}", body)
-                    } else {
-                        body
-                    }
-                })
-                .collect();
-            self.out.push_str(&cells.join(" & "));
-            self.out.push_str(" \\\\\n\\hline\n");
-            // 表头在续页重复
-            if row_idx == 0 {
-                self.out.push_str("\\endhead\n");
-            }
-        }
-
-        self.out.push_str("\\end{longtable}\n\n");
+        self.out.push_str(&table_latex);
+        self.out.push_str("\n\n");
     }
 
     fn reset_list(&mut self) {
@@ -593,7 +574,7 @@ fn render_inlines(inlines: &[Inline]) -> String {
                 s.push_str(&escape_href_url(url));
                 s.push('}');
             }
-            // 交叉引用：公文中仅图片 label 有效，章节锚点会被忽略（\ref 显示 ??）
+            // 交叉引用：公文中仅图片/表格 label 有效，章节锚点会被忽略（\ref 显示 ??）
             Inline::CrossRef(id) => {
                 s.push_str("\\ref{");
                 s.push_str(id);
@@ -824,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn table_emits_longtable() {
+    fn table_emits_longtblr() {
         let mut e = TexEmitter::new();
         e.emit_block(&Block::Table {
             rows: vec![
@@ -834,11 +815,80 @@ mod tests {
             caption: None,
         });
         let body = test_body(e);
-        assert!(body.contains("\\begin{longtable}{|l|l|}"));
-        assert!(body.contains("\\textbf{列A}"));
-        assert!(body.contains("\\hline"));
-        // 表头在续页重复
-        assert!(body.contains("\\endhead"));
+        assert!(body.contains("\\begin{longtblr}"), "got {}", body);
+        // 表头黑体
+        assert!(body.contains("\\heiti 列A"), "got {}", body);
+        // 全框线 + 表头续页重复
+        assert!(body.contains("hlines"), "got {}", body);
+        assert!(body.contains("vlines"), "got {}", body);
+        assert!(body.contains("rowhead = 1"), "got {}", body);
+        assert!(body.contains("\\end{longtblr}"), "got {}", body);
+    }
+
+    #[test]
+    fn table_caption_passed_to_longtblr() {
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["1".into(), "2".into()],
+            ],
+            caption: Some("产品清单".into()),
+        });
+        let body = test_body(e);
+        assert!(body.contains("caption={产品清单}"), "got {}", body);
+    }
+
+    #[test]
+    fn table_label_passed_to_longtblr() {
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Label("tbl:products".into()));
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["1".into(), "2".into()],
+            ],
+            caption: Some("产品清单".into()),
+        });
+        let body = test_body(e);
+        assert!(body.contains("label={tbl:products}"), "got {}", body);
+    }
+
+    #[test]
+    fn heading_discards_pending_label() {
+        // 公文标题无自动编号：标题前的锚点必须丢弃，不得漂移到后续表格上
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Label("sec:a".into()));
+        e.emit_block(&Block::Heading {
+            level: 3,
+            text: "背景".into(),
+        });
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["列A".into(), "列B".into()],
+                vec!["1".into(), "2".into()],
+            ],
+            caption: Some("产品清单".into()),
+        });
+        let body = test_body(e);
+        assert!(!body.contains("label="), "got {}", body);
+    }
+
+    #[test]
+    fn table_smart_colspec_narrow_numeric_column() {
+        // 序号列（表体全是 2 位以内纯数字）固定 2em，其余列按内容比例分配
+        let mut e = TexEmitter::new();
+        e.emit_block(&Block::Table {
+            rows: vec![
+                vec!["序号".into(), "说明".into()],
+                vec!["1".into(), "第一条说明文字，较长。".into()],
+                vec!["12".into(), "第二条说明文字，同样较长。".into()],
+            ],
+            caption: None,
+        });
+        let body = test_body(e);
+        assert!(body.contains("Q[c,wd=2em]"), "got {}", body);
+        assert!(body.contains("X["), "got {}", body);
     }
 
     #[test]

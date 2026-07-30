@@ -9,7 +9,7 @@
 %% 因此这里设置 secnumdepth=-2 屏蔽自动编号。
 
 \NeedsTeXFormat{LaTeX2e}
-\ProvidesClass{official}[2026/04/26 v1.0 mdx 公文 markdown class]
+\ProvidesClass{official}[2026/07/30 v1.4 mdx 公文 markdown class]
 
 %% ============================================================
 %% 基类：ctexart（无章）
@@ -30,17 +30,40 @@
 \RequirePackage{paralist}
 \RequirePackage{float}      %% figure [H]：图就地排版
 \RequirePackage{longtable}  %% 表格可跨页断开，不为"整表完整"制造空页
+\RequirePackage{caption}    %% 浮动体/长表格表题样式
+\RequirePackage{tabularray} %% longtblr 智能表格（自动列宽、表头续页重复）
 \RequirePackage{hyperref}
 
 %% ============================================================
 %% 圆圈数字（与 md2tex.cls 一致）
-%% 用 \textcircled{n} 渲染，避免依赖特定 Unicode 字体是否带圈数字字形
+%% 使用 ①-⑳、⑴-⒇ 专门字符，不用 \textcircled 现场画圈
 %% ============================================================
+%% 字形路由：xeCJK 默认把这些字符交给罗马字体（而非 CJK 字体），
+%% 故用 \newfontfamily 设置。字体跟随正文仿宋（与 research 用正文
+%% 主字体一个思路），保证圈号与正文字形风格一致。
+%% 已知限制：中文字体普遍缺 ⑪-⑳（U+246A-U+2473），L1 列表超过
+%% 10 项时这些圈号会缺字（research 的 FZShuSong-Z01 亦同）。
+\IfFontExistsTF{仿宋_GB2312}{%
+  \newfontfamily\ennumber{仿宋_GB2312}%
+}{%
+  \IfFontExistsTF{FangSong_GB2312}{%
+    \newfontfamily\ennumber{FangSong_GB2312}%
+  }{%
+    \IfFontExistsTF{FangSong}{%
+      \newfontfamily\ennumber{FangSong}%
+    }{%
+      \newfontfamily\ennumber{FZShuSong-Z01}%
+      \ClassWarning{official}{字体 '仿宋_GB2312' 不可用，圈号回退到 FZShuSong-Z01}%
+    }%
+  }%
+}
+\let\encircle\ennumber
 \newcommand{\textcriclednum}[1]{%
-\textcircled{\ifcase#1 1\or 2\or 3\or 4\or 5\or 6\or 7\or 8\or 9\or 10%
-\or 11\or 12\or 13\or 14\or 15\or 16\or 17\or 18\or 19\or 20\fi}}
-\newcommand{\circlenum}[1]{\textcircled{\ifcase#1 1\or 2\or 3\or 4\or 5\or 6\or 7\or 8\or 9\or 10%
-\or 11\or 12\or 13\or 14\or 15\or 16\or 17\or 18\or 19\or 20\fi}}
+\ennumber \ifcase#1 \or ①\or ②\or ③\or ④\or ⑤\or ⑥\or ⑦\or ⑧\or ⑨\or ⑩%
+\or ⑪\or ⑫\or ⑬\or ⑭\or ⑮\or ⑯\or ⑰\or ⑱\or ⑲\or ⑳\else{Error}\fi}
+\newcommand{\circlenum}[1]{%
+\encircle\ifcase#1 \or ⑴\or ⑵\or ⑶\or ⑷\or ⑸\or ⑹\or ⑺\or ⑻\or ⑼\or ⑽%
+\or ⑾\or ⑿\or ⒀\or ⒁\or ⒂\or ⒃\or ⒄\or ⒅\or ⒆\or ⒇\else{Error}\fi}
 
 %% mdx 列表：L1 → asparaenum（首行缩进段落式），L2..6 → inparaenum（行内紧排）
 \setdefaultenum{\circlenum{\arabic{enumi}}\hspace{-0.2em}}{\textcriclednum{\arabic{enumii}}\hspace{-0.3em}}{(\Alph{enumiii})}{(\alph{enumiv})}
@@ -152,6 +175,24 @@
 %% longtable 前后留白紧凑，并允许在页内任意行断开
 \setlength{\LTpre}{6pt}
 \setlength{\LTpost}{6pt}
+
+%% ============================================================
+%% 表题与 longtblr 智能表格（与 research 同一套 emitter）
+%% ============================================================
+%% 表题编号样式："表 1  标题"，编号黑体四号、题文仿宋四号
+\renewcommand{\tablename}{表}
+\captionsetup{labelsep=space}
+
+%% 表内文字：四号（14bp/21pt，行距与正文 1.5 倍一致）仿宋，表头黑体居中
+\AtBeginEnvironment{longtblr}{\fontsize{14bp}{21pt}\selectfont\fs}
+\SetTblrInner[longtblr]{
+  cells={font=\fs, halign=c, valign=m},
+  row{1}={font=\hei, bg=white}
+}
+\DefTblrTemplate{contfoot-text}{default}{下一页继续}
+\DefTblrTemplate{conthead-text}{default}{（续表）}
+\SetTblrStyle{caption-tag}{font=\hei\zihao{4}}
+\SetTblrStyle{caption-text}{font=\fs\zihao{4}}
 
 %% 不为避免孤行/表格断开而重排整页：断开的代价远小于抻长版面
 \clubpenalty=150

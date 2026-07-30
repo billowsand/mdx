@@ -5,7 +5,7 @@
 //! - 同一锚点重复定义；
 //! - 锚点不会生效：`Block::Label` 未挂接到标题/表格、带锚点的图片没有
 //!   替代文本（无 caption 则不输出 \label）、带锚点的图片未独占一段、
-//!   official 样式下的章节/表格锚点。
+//!   official 样式下的章节锚点。
 //!
 //! 软警告（仅打印，不停止）：锚点已定义但未被任何 `{@id}` 引用。
 //!
@@ -22,8 +22,9 @@ use super::ast::{Block, Inline};
 pub enum Support {
     /// research tex：章节/表格/图片锚点全部生效
     Full,
-    /// official tex：仅图片锚点生效（章节无自动编号，表格无计数器）
-    FiguresOnly,
+    /// official tex：图片/表格锚点生效（章节无自动编号，故标题锚点无效；
+    /// 表格经 longtblr caption 获得自动编号，可引用）
+    FiguresAndTables,
 }
 
 #[derive(Debug, Default)]
@@ -65,20 +66,24 @@ pub fn check(blocks: &[Block], support: Support) -> Report {
                 let next = blocks[idx + 1..]
                     .iter()
                     .find(|b| !matches!(b, Block::Empty));
-                let attached = matches!(
-                    next,
-                    Some(Block::Heading { .. }) | Some(Block::Table { .. })
-                );
-                if !attached {
-                    report
-                        .errors
-                        .push(format!("锚点 '{id}' 未挂接到标题或表格，不会生效"));
-                } else if support == Support::FiguresOnly {
-                    report.errors.push(format!(
-                        "锚点 '{id}' 在 official 样式下不生效（章节/表格无自动编号，仅图片锚点可用）"
-                    ));
-                } else {
-                    define!(id);
+                match next {
+                    Some(Block::Heading { .. }) => {
+                        if support == Support::FiguresAndTables {
+                            report.errors.push(format!(
+                                "锚点 '{id}' 在 official 样式下不生效（章节无自动编号，仅图片/表格锚点可用）"
+                            ));
+                        } else {
+                            define!(id);
+                        }
+                    }
+                    Some(Block::Table { .. }) => {
+                        define!(id);
+                    }
+                    _ => {
+                        report
+                            .errors
+                            .push(format!("锚点 '{id}' 未挂接到标题或表格，不会生效"));
+                    }
                 }
             }
             Block::Paragraph(inlines) => {
@@ -258,7 +263,10 @@ mod tests {
 
     #[test]
     fn official_heading_label_is_error() {
-        let errs = errors("## 一、节 {#sec:a}\n\n见{@sec:a}。\n", Support::FiguresOnly);
+        let errs = errors(
+            "## 一、节 {#sec:a}\n\n见{@sec:a}。\n",
+            Support::FiguresAndTables,
+        );
         assert!(
             errs.iter()
                 .any(|e| e.contains("sec:a") && e.contains("official")),
@@ -269,7 +277,14 @@ mod tests {
     #[test]
     fn official_figure_label_passes() {
         let md = "![图](a.png){#fig:x}\n\n见{@fig:x}。\n";
-        let errs = errors(md, Support::FiguresOnly);
+        let errs = errors(md, Support::FiguresAndTables);
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn official_table_label_passes() {
+        let md = "表：产品清单 {#tbl:t}\n\n| A |\n|---|\n| 1 |\n\n见表{@tbl:t}。\n";
+        let errs = errors(md, Support::FiguresAndTables);
         assert!(errs.is_empty(), "{errs:?}");
     }
 
