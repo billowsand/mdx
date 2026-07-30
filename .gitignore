@@ -1,6 +1,7 @@
 /target/
 *.log
-
+.workbuddy
+target-cache
 # Local editor / agent state
 .claude/settings.local.json
 docs/superpowers/plans/
