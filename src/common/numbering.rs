@@ -53,7 +53,7 @@ pub fn number_to_uppercase_letter(num: usize) -> String {
 
 /// 公文 6 级列表前缀循环：①②③ → ⑴⑵⑶ → a.b.c. → I.II.III. → (A)(B) → 1)2)
 ///
-/// 与 docx_official::Converter::get_list_prefix 表达同一份循环表，但不依赖
+/// 与 `ListState::next_prefix` 表达同一份循环表，但不依赖
 /// 状态机；emitter 拿到 1..=6 的 level 和该 level 的 1-based 计数即可。
 #[allow(dead_code)]
 pub fn list_prefix(level: u8, count: usize) -> String {

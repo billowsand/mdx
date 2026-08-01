@@ -233,17 +233,6 @@ fn remove_first_h1(content: &str) -> String {
     }
 }
 
-/// 撰写时间归一化为"YYYY 年 M 月"（接受 2026-07 / 2026/7 / 2026.07 / 2026年7月）。
-fn normalize_cover_date(raw: &str) -> String {
-    if let Ok(re) = regex::Regex::new(r"^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*月?$") {
-        if let Some(caps) = re.captures(raw.trim()) {
-            let month: u32 = caps[2].parse().unwrap_or(0);
-            return format!("{} 年 {} 月", &caps[1], month);
-        }
-    }
-    raw.trim().to_string()
-}
-
 /// 渲染 pandoc 风格的简单模板变量。
 ///
 /// 这里不重新实现完整 pandoc template 语言，只覆盖当前内置模板与常见外部模板
@@ -295,7 +284,7 @@ fn render_template(
     let date = cover
         .date
         .as_ref()
-        .map(|d| escape_latex(&normalize_cover_date(d)))
+        .map(|d| escape_latex(&front_matter::normalize_date(d)))
         .unwrap_or_else(|| r"\the\year 年 \the\month 月".to_string());
 
     rendered = rendered.replace("$body$", body);
@@ -522,10 +511,13 @@ mod tests {
 
     #[test]
     fn normalizes_cover_date_to_month() {
-        assert_eq!(normalize_cover_date("2026-07"), "2026 年 7 月");
-        assert_eq!(normalize_cover_date("2026/7"), "2026 年 7 月");
-        assert_eq!(normalize_cover_date("2026年07月"), "2026 年 7 月");
-        assert_eq!(normalize_cover_date("二〇二六年七月"), "二〇二六年七月");
+        assert_eq!(front_matter::normalize_date("2026-07"), "2026 年 7 月");
+        assert_eq!(front_matter::normalize_date("2026/7"), "2026 年 7 月");
+        assert_eq!(front_matter::normalize_date("2026年07月"), "2026 年 7 月");
+        assert_eq!(
+            front_matter::normalize_date("二〇二六年七月"),
+            "二〇二六年七月"
+        );
     }
 
     #[test]

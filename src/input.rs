@@ -41,11 +41,6 @@ pub fn collect_raw(input: &Path) -> Result<String> {
     }
 }
 
-/// 把输入路径合并成单一字符串，并剥除 Markdown 水平分隔线。
-pub fn collect(input: &Path) -> Result<String> {
-    Ok(strip_horizontal_rules(&collect_raw(input)?))
-}
-
 /// 删除整行只剩 `---` / `----` …… 的水平分隔线。
 ///
 /// 表格分隔行（如 `|---|---|`）以 `|` 起始，正则不会命中；不影响表格解析。

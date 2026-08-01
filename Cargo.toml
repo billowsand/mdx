@@ -1,6 +1,6 @@
 [package]
 name = "mdx"
-version = "2.8.0"
+version = "2.12.0"
 edition = "2021"
 authors = ["marmot"]
 description = "面向中文公文与研究报告的 Markdown 转 DOCX/TeX 桌面及命令行工具"
@@ -36,6 +36,7 @@ gui = ["dep:eframe", "dep:rfd"]
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 docx-rs = "0.4"
+image = { version = "0.25.6", default-features = false, features = ["gif", "jpeg", "png", "bmp", "tiff"] }
 regex = "1"
 anyhow = "1"
 biblatex = "0.12"

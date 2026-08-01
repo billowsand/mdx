@@ -1,7 +1,7 @@
 //! 区段切换标记的识别：HTML 注释 `<!-- [摘要] -->` 等。
 //!
-//! 仅 docx_research / tex_official 两种 emitter 用到；公文 docx 把整行视作普通文本
-//! （markdown 注释里没有可见字符，最多输出空行）。
+//! docx_research / tex_official / tex_research 等 emitter 用标记切换模式；
+//! docx_official 直接忽略标记块（公文不使用区段分段）。
 
 use super::ast::MarkerKind;
 

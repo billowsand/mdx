@@ -15,12 +15,13 @@
 //! 挂 `pStyle="Heading1"` 但 styles.xml 里没有该样式定义，TOC 会是空的。
 
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::{Datelike, Local};
 use docx_rs::*;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::common::ast::{Block, Inline, MarkerKind};
+use crate::common::front_matter::{self, Metadata};
 use crate::common::numbering::{int_to_roman, number_to_uppercase_letter};
 use crate::parser;
 
@@ -62,13 +63,15 @@ const PAGE_TOP: i32 = 2098; // 37 mm
 const PAGE_BOTTOM: i32 = 1984; // 35 mm
 const PAGE_LEFT: i32 = 1587; // 28 mm
 const PAGE_RIGHT: i32 = 1474; // 26 mm
+const MAX_IMAGE_WIDTH_EMU: u32 = 5_600_000; // 约 156 mm，限制在版心内
+const MAX_INLINE_IMAGE_WIDTH_EMU: u32 = 1_800_000;
 
-// ===== 圆圈数字（与公文一致，emitter 局部使用） =====
-const CIRCLE_NUMBERS_1: &[&str] = &[
+// ===== research 模板的六级列表前缀 =====
+const PAREN_CIRCLE_NUMBERS: &[&str] = &[
     "⑴", "⑵", "⑶", "⑷", "⑸", "⑹", "⑺", "⑻", "⑼", "⑽", "⑾", "⑿", "⒀", "⒁", "⒂", "⒃", "⒄", "⒅", "⒆",
     "⒇",
 ];
-const CIRCLE_NUMBERS_2: &[&str] = &[
+const CIRCLE_NUMBERS: &[&str] = &[
     "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲",
     "⑳",
 ];
@@ -83,26 +86,35 @@ fn font_set(name: &str) -> RunFonts {
 
 /// 入口：研究报告 docx 转换。
 pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
-    let content = crate::input::collect(input)?;
+    let input_kind = crate::input::classify(input)?;
+    let raw = crate::input::collect_raw(input)?;
+    let (metadata, content) = front_matter::parse(&raw);
+    let content = crate::input::strip_horizontal_rules(&content);
     let output_path = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| crate::input::default_output(input, "docx"));
 
     println!("正在转换: {}", input.display());
 
+    let image_base_dir = match input_kind {
+        crate::input::InputKind::Directory => input.to_path_buf(),
+        crate::input::InputKind::File => input.parent().unwrap_or(Path::new(".")).to_path_buf(),
+    };
+
     let blocks = parser::parse(&content);
     let split = split_blocks(&blocks);
+    let cover_title = metadata.title.as_deref().or(split.title.as_deref());
 
     let mut docx = base_docx();
     docx = register_styles(docx);
-    docx = add_cover(docx, split.title.as_deref());
+    docx = add_cover(docx, cover_title, &metadata);
     docx = add_toc(docx);
 
     if !split.changelog.is_empty() {
-        docx = add_changelog(docx, &split.changelog);
+        docx = add_changelog(docx, &split.changelog, &image_base_dir);
     }
 
-    let mut emitter = MainEmitter::new();
+    let mut emitter = MainEmitter::with_image_base(image_base_dir);
     docx = emitter.emit_all(docx, &split.main);
 
     if let Some(dir) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -263,31 +275,94 @@ fn register_styles(docx: Docx) -> Docx {
 // 封面
 // ============================================================
 
-fn add_cover(mut docx: Docx, title: Option<&str>) -> Docx {
+fn add_cover(mut docx: Docx, title: Option<&str>, metadata: &Metadata) -> Docx {
     let title_text = title.unwrap_or("研究报告");
+    let security = match (
+        metadata.security.as_deref().unwrap_or("公开"),
+        metadata.security_years.as_deref(),
+    ) {
+        (security, Some(years)) => format!("{}★{}", security, years),
+        (security, None) => security.to_string(),
+    };
+    let doc_type = metadata.doc_type.as_deref().unwrap_or("研究报告");
+    let version = metadata.version.as_deref().unwrap_or("V1.0");
+    let institution = metadata.institution.as_deref().unwrap_or("某某单位");
+    let date = metadata
+        .date
+        .as_deref()
+        .map(front_matter::normalize_date)
+        .unwrap_or_else(|| {
+            let now = Local::now();
+            format!("{} 年 {} 月", now.year(), now.month())
+        });
 
-    // 左上"公开"（黑体四号）
+    // 顶部信息栏：密级/年限在左，编号在右。
+    let mut top = Paragraph::new()
+        .align(AlignmentType::Left)
+        .add_tab(Tab::new().val(TabValueType::Right).pos(8800))
+        .line_spacing(
+            LineSpacing::new()
+                .line(LINE_BODY)
+                .line_rule(LineSpacingType::AtLeast),
+        )
+        .add_run(
+            Run::new()
+                .add_text(format!("密级：{}", security))
+                .fonts(font_set(FONT_HEAD))
+                .size(SIZE_BODY)
+                .bold(),
+        );
+    if let Some(number) = metadata.doc_number.as_deref() {
+        top = top.add_run(Run::new().add_tab()).add_run(
+            Run::new()
+                .add_text(format!("编号：{}", number))
+                .fonts(font_set(FONT_HEAD))
+                .size(SIZE_BODY)
+                .bold(),
+        );
+    }
+    docx = docx.add_paragraph(top);
+
+    // 版本行下方用细线收束顶部信息栏。
+    let mut version_line = Paragraph::new()
+        .align(AlignmentType::Left)
+        .line_spacing(
+            LineSpacing::new()
+                .after(80)
+                .line(LINE_BODY)
+                .line_rule(LineSpacingType::AtLeast),
+        )
+        .add_run(
+            Run::new()
+                .add_text(format!("版本：{}", version))
+                .fonts(font_set(FONT_HEAD))
+                .size(SIZE_BODY)
+                .bold(),
+        );
+    version_line.property = version_line.property.clone().set_borders(
+        ParagraphBorders::with_empty()
+            .set(ParagraphBorder::new(ParagraphBorderPosition::Bottom).size(6)),
+    );
+    docx = docx.add_paragraph(version_line);
+
+    // 文件类型：标题上方的封面角色标识。
     docx = docx.add_paragraph(
         Paragraph::new()
-            .align(AlignmentType::Left)
+            .align(AlignmentType::Center)
             .line_spacing(
                 LineSpacing::new()
-                    .line(LINE_BODY)
+                    .before(1200)
+                    .line(LINE_HEAD)
                     .line_rule(LineSpacingType::AtLeast),
             )
             .add_run(
                 Run::new()
-                    .add_text("公开")
+                    .add_text(doc_type)
                     .fonts(font_set(FONT_HEAD))
-                    .size(SIZE_HEAD3)
+                    .size(SIZE_HEAD1)
                     .bold(),
             ),
     );
-
-    // 上半 vfill：约 8 空行把标题推到中部
-    for _ in 0..8 {
-        docx = docx.add_paragraph(Paragraph::new());
-    }
 
     // 标题（一号小标宋居中）
     docx = docx.add_paragraph(
@@ -295,8 +370,8 @@ fn add_cover(mut docx: Docx, title: Option<&str>) -> Docx {
             .align(AlignmentType::Center)
             .line_spacing(
                 LineSpacing::new()
-                    .before(0)
-                    .after(0)
+                    .before(560)
+                    .after(640)
                     .line(800)
                     .line_rule(LineSpacingType::AtLeast),
             )
@@ -309,38 +384,27 @@ fn add_cover(mut docx: Docx, title: Option<&str>) -> Docx {
             ),
     );
 
-    // 下半 vfill：约 9 空行把单位/日期推到底部
-    for _ in 0..9 {
-        docx = docx.add_paragraph(Paragraph::new());
-    }
-
-    // "某某单位"（黑体三号居中）
+    // 落款单位（黑体三号居中）。
     docx = docx.add_paragraph(
         Paragraph::new()
             .align(AlignmentType::Center)
             .line_spacing(
                 LineSpacing::new()
-                    .after(320) // 16pt vspace
+                    .before(4200)
+                    .after(320)
                     .line(LINE_BODY)
                     .line_rule(LineSpacingType::AtLeast),
             )
             .add_run(
                 Run::new()
-                    .add_text("某某单位")
+                    .add_text(institution)
                     .fonts(font_set(FONT_HEAD))
                     .size(SIZE_COVER_INSTITUTION)
                     .bold(),
             ),
     );
 
-    // 日期（黑体四号居中加粗，对齐 LaTeX `\zihao{4}\bfseries\dateofsubmit`）
-    let now = Local::now();
-    let date_str = format!(
-        "{}年{}月{}日",
-        now.format("%Y"),
-        now.format("%m"),
-        now.format("%d")
-    );
+    // 日期（四号书宋，统一到年月）。
     docx = docx.add_paragraph(
         Paragraph::new()
             .align(AlignmentType::Center)
@@ -351,10 +415,9 @@ fn add_cover(mut docx: Docx, title: Option<&str>) -> Docx {
             )
             .add_run(
                 Run::new()
-                    .add_text(&date_str)
-                    .fonts(font_set(FONT_HEAD))
-                    .size(SIZE_COVER_DATE)
-                    .bold(),
+                    .add_text(&date)
+                    .fonts(font_set(FONT_BODY))
+                    .size(SIZE_COVER_DATE),
             ),
     );
 
@@ -397,7 +460,7 @@ fn add_toc(mut docx: Docx) -> Docx {
 // 版本变更记录
 // ============================================================
 
-fn add_changelog(mut docx: Docx, blocks: &[Block]) -> Docx {
+fn add_changelog(mut docx: Docx, blocks: &[Block], image_base_dir: &Path) -> Docx {
     docx = docx.add_paragraph(
         Paragraph::new()
             .align(AlignmentType::Center)
@@ -417,8 +480,15 @@ fn add_changelog(mut docx: Docx, blocks: &[Block]) -> Docx {
             ),
     );
 
-    let mut emitter = ChangelogEmitter::new();
+    let mut emitter = ChangelogEmitter::with_image_base(image_base_dir.to_path_buf());
+    let mut skipped_repeated_title = false;
     for b in blocks {
+        if !skipped_repeated_title
+            && matches!(b, Block::Heading { level: 1, text } if text.trim() == "版本变更记录")
+        {
+            skipped_repeated_title = true;
+            continue;
+        }
         docx = emitter.emit(docx, b);
     }
     docx.add_paragraph(Paragraph::new().page_break_before(true))
@@ -444,6 +514,11 @@ struct MainEmitter {
     appendix_idx: usize, // 0..N，对应附录 A..
     ref_counter: usize,  // 参考文献条目计数器 [1] [2] ...
     list: ListState,
+    appendix_saw_h1: bool,
+    suppress_next_heading: Option<&'static str>,
+    table_counter: usize,
+    figure_counter: usize,
+    image_base_dir: PathBuf,
 }
 
 #[derive(Default)]
@@ -459,7 +534,12 @@ struct ListState {
 }
 
 impl MainEmitter {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::with_image_base(PathBuf::from("."))
+    }
+
+    fn with_image_base(image_base_dir: PathBuf) -> Self {
         Self {
             mode: Mode::Body,
             chapter: 0,
@@ -468,6 +548,11 @@ impl MainEmitter {
             appendix_idx: 0,
             ref_counter: 0,
             list: ListState::default(),
+            appendix_saw_h1: false,
+            suppress_next_heading: None,
+            table_counter: 0,
+            figure_counter: 0,
+            image_base_dir,
         }
     }
 
@@ -481,22 +566,37 @@ impl MainEmitter {
     fn emit(&mut self, docx: Docx, b: &Block) -> Docx {
         match b {
             Block::Marker(kind) => {
+                self.list.reset();
                 self.handle_marker(*kind);
                 if matches!(kind, MarkerKind::Abstract) {
+                    self.suppress_next_heading = Some("摘要");
                     return self.emit_abstract_header(docx);
                 }
                 if matches!(kind, MarkerKind::Reference) {
-                    return self.emit_reference_header(docx);
+                    self.suppress_next_heading = Some("参考文献");
+                    return self.emit_reference_header(page_break(docx));
                 }
                 docx
             }
             Block::Heading { level, text } => {
                 self.list.reset();
+                if self
+                    .suppress_next_heading
+                    .take()
+                    .is_some_and(|expected| *level == 1 && text.trim() == expected)
+                {
+                    return docx;
+                }
                 self.emit_heading(docx, *level, text)
             }
             Block::Paragraph(inlines) => {
                 self.list.reset();
-                add_body_paragraph(docx, |p| add_inlines(p, inlines))
+                if let Some((alt, url)) = sole_image(inlines) {
+                    self.add_figure(docx, alt, url)
+                } else {
+                    let base_dir = &self.image_base_dir;
+                    add_body_paragraph(docx, |p| add_inlines(p, inlines, base_dir))
+                }
             }
             Block::List {
                 ordered: _,
@@ -509,15 +609,23 @@ impl MainEmitter {
                 } else {
                     self.list.next_prefix(*level)
                 };
-                add_list_paragraph(docx, *level, &prefix, content)
+                add_list_paragraph(docx, *level, &prefix, content, &self.image_base_dir)
             }
-            Block::Table { rows, .. } => {
+            Block::Table { rows, caption } => {
                 self.list.reset();
+                let docx = if let Some(caption) = caption {
+                    self.table_counter += 1;
+                    let caption =
+                        format!("表 {} {}", self.object_number(self.table_counter), caption);
+                    add_table_caption(docx, &caption)
+                } else {
+                    docx
+                };
                 add_table(docx, rows)
             }
-            Block::CodeBlock { .. } => {
-                // 研究报告 docx 暂不支持代码块
-                docx
+            Block::CodeBlock { content, .. } => {
+                self.list.reset();
+                add_code_block(docx, content)
             }
             Block::Empty => docx,
             Block::Label(_) => {
@@ -533,8 +641,18 @@ impl MainEmitter {
             MarkerKind::Appendix => {
                 self.mode = Mode::Appendix;
                 self.appendix_idx = 0;
+                self.appendix_saw_h1 = false;
+                self.table_counter = 0;
+                self.figure_counter = 0;
             }
-            MarkerKind::Body => self.mode = Mode::Body,
+            MarkerKind::Body => {
+                self.mode = Mode::Body;
+                self.chapter = 0;
+                self.section = 0;
+                self.subsection = 0;
+                self.table_counter = 0;
+                self.figure_counter = 0;
+            }
             MarkerKind::Reference => {
                 self.mode = Mode::Reference;
                 self.appendix_idx = 0;
@@ -557,11 +675,41 @@ impl MainEmitter {
     }
 
     fn emit_heading(&mut self, mut docx: Docx, level: u8, text: &str) -> Docx {
+        if self.mode == Mode::Appendix {
+            if level == 1 {
+                self.appendix_saw_h1 = true;
+            }
+            return match (level, self.appendix_saw_h1) {
+                (1, _) | (2, false) => {
+                    self.appendix_idx += 1;
+                    self.table_counter = 0;
+                    self.figure_counter = 0;
+                    let letter = (b'A' + (self.appendix_idx - 1) as u8) as char;
+                    let label = format!("附录 {} {}", letter, text);
+                    docx = page_break(docx);
+                    docx.add_paragraph(heading_chapter_paragraph(&label))
+                }
+                (2, true) | (3, false) => docx.add_paragraph(heading_section_paragraph(text)),
+                (3, true) | (4, false) => docx.add_paragraph(heading_subsection_paragraph(text)),
+                _ => add_body_paragraph(docx, |p| {
+                    p.align(AlignmentType::Left).add_run(
+                        Run::new()
+                            .add_text(text)
+                            .fonts(font_set(FONT_HEAD))
+                            .size(SIZE_BODY)
+                            .bold(),
+                    )
+                }),
+            };
+        }
+
         match (level, self.mode) {
             (2, Mode::Body) => {
                 self.chapter += 1;
                 self.section = 0;
                 self.subsection = 0;
+                self.table_counter = 0;
+                self.figure_counter = 0;
                 let label = format!("第{}章 {}", chinese_chapter(self.chapter), text);
                 docx = page_break(docx);
                 docx.add_paragraph(heading_chapter_paragraph(&label))
@@ -580,15 +728,6 @@ impl MainEmitter {
                 );
                 docx.add_paragraph(heading_subsection_paragraph(&label))
             }
-            (2, Mode::Appendix) => {
-                self.appendix_idx += 1;
-                let letter = (b'A' + (self.appendix_idx - 1) as u8) as char;
-                let label = format!("附录 {} {}", letter, text);
-                docx = page_break(docx);
-                docx.add_paragraph(heading_chapter_paragraph(&label))
-            }
-            (3, Mode::Appendix) => docx.add_paragraph(heading_section_paragraph(text)),
-            (4, Mode::Appendix) => docx.add_paragraph(heading_subsection_paragraph(text)),
             (2, Mode::Reference) => docx.add_paragraph(heading_section_paragraph(text)),
             (3, Mode::Reference) => docx.add_paragraph(heading_subsection_paragraph(text)),
             (_, Mode::Abstract) => {
@@ -618,6 +757,48 @@ impl MainEmitter {
             _ => docx,
         }
     }
+
+    fn object_number(&self, counter: usize) -> String {
+        match self.mode {
+            Mode::Appendix if self.appendix_idx > 0 => {
+                format!(
+                    "{}.{}",
+                    number_to_uppercase_letter(self.appendix_idx),
+                    counter
+                )
+            }
+            Mode::Body if self.chapter > 0 => format!("{}.{}", self.chapter, counter),
+            _ => counter.to_string(),
+        }
+    }
+
+    fn add_figure(&mut self, docx: Docx, alt: &str, url: &str) -> Docx {
+        match crate::common::docx_image::load(url, &self.image_base_dir, MAX_IMAGE_WIDTH_EMU) {
+            Ok(pic) => {
+                let has_caption = !alt.trim().is_empty();
+                let figure = Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .keep_next(has_caption)
+                    .add_run(Run::new().add_image(pic));
+                let docx = docx.add_paragraph(figure);
+                if has_caption {
+                    self.figure_counter += 1;
+                    let caption = format!(
+                        "图 {} {}",
+                        self.object_number(self.figure_counter),
+                        alt.trim()
+                    );
+                    add_figure_caption(docx, &caption)
+                } else {
+                    docx
+                }
+            }
+            Err(error) => {
+                eprintln!("  警告：{error:#}");
+                add_image_error_paragraph(docx, alt, url)
+            }
+        }
+    }
 }
 
 // ============================================================
@@ -626,12 +807,16 @@ impl MainEmitter {
 
 struct ChangelogEmitter {
     list: ListState,
+    table_counter: usize,
+    image_base_dir: PathBuf,
 }
 
 impl ChangelogEmitter {
-    fn new() -> Self {
+    fn with_image_base(image_base_dir: PathBuf) -> Self {
         Self {
             list: ListState::default(),
+            table_counter: 0,
+            image_base_dir,
         }
     }
 
@@ -656,7 +841,7 @@ impl ChangelogEmitter {
             }
             Block::Paragraph(inlines) => {
                 self.list.reset();
-                add_body_paragraph(docx, |p| add_inlines(p, inlines))
+                add_body_paragraph(docx, |p| add_inlines(p, inlines, &self.image_base_dir))
             }
             Block::List {
                 ordered: _,
@@ -664,10 +849,16 @@ impl ChangelogEmitter {
                 content,
             } => {
                 let prefix = self.list.next_prefix(*level);
-                add_list_paragraph(docx, *level, &prefix, content)
+                add_list_paragraph(docx, *level, &prefix, content, &self.image_base_dir)
             }
-            Block::Table { rows, .. } => {
+            Block::Table { rows, caption } => {
                 self.list.reset();
+                let docx = if let Some(caption) = caption {
+                    self.table_counter += 1;
+                    add_table_caption(docx, &format!("表 {} {}", self.table_counter, caption))
+                } else {
+                    docx
+                };
                 add_table(docx, rows)
             }
             Block::Marker(_) | Block::Empty | Block::CodeBlock { .. } | Block::Label(_) => docx,
@@ -676,7 +867,7 @@ impl ChangelogEmitter {
 }
 
 // ============================================================
-// 列表前缀状态机（与 docx_official::Converter 完全一致）
+// 列表前缀状态机（对齐 research LaTeX 模板）
 // ============================================================
 
 impl ListState {
@@ -698,11 +889,10 @@ impl ListState {
                     self.l1 = 0;
                 }
                 self.l1 += 1;
-                if self.l1 <= CIRCLE_NUMBERS_2.len() {
-                    CIRCLE_NUMBERS_2[self.l1 - 1].to_string()
-                } else {
-                    format!("({})", self.l1)
-                }
+                PAREN_CIRCLE_NUMBERS
+                    .get(self.l1 - 1)
+                    .map(|prefix| format!("{} ", prefix))
+                    .unwrap_or_else(|| format!("({}) ", self.l1))
             }
             2 => {
                 if !self.in_list || self.level != 2 {
@@ -721,11 +911,10 @@ impl ListState {
                     }
                 }
                 self.l2 += 1;
-                if self.l2 <= CIRCLE_NUMBERS_1.len() {
-                    CIRCLE_NUMBERS_1[self.l2 - 1].to_string()
-                } else {
-                    format!("({})", self.l2)
-                }
+                CIRCLE_NUMBERS
+                    .get(self.l2 - 1)
+                    .map(|prefix| format!("{} ", prefix))
+                    .unwrap_or_else(|| format!("({}) ", self.l2))
             }
             3 => {
                 if !self.in_list || self.level < 3 {
@@ -735,8 +924,7 @@ impl ListState {
                     self.l6 = 0;
                 }
                 self.l3 += 1;
-                let ch = (b'a' + ((self.l3 - 1) % 26) as u8) as char;
-                format!("{}.", ch)
+                format!("({}) ", number_to_uppercase_letter(self.l3))
             }
             4 => {
                 if !self.in_list || self.level < 4 {
@@ -745,7 +933,8 @@ impl ListState {
                     self.l6 = 0;
                 }
                 self.l4 += 1;
-                format!("{}.", int_to_roman(self.l4))
+                let ch = (b'a' + ((self.l4 - 1) % 26) as u8) as char;
+                format!("({}) ", ch)
             }
             5 => {
                 if !self.in_list || self.level < 5 {
@@ -753,14 +942,14 @@ impl ListState {
                     self.l6 = 0;
                 }
                 self.l5 += 1;
-                format!("({})", number_to_uppercase_letter(self.l5))
+                format!("{}. ", int_to_roman(self.l5))
             }
             6 => {
                 if !self.in_list || self.level < 6 {
                     self.l6 = 0;
                 }
                 self.l6 += 1;
-                format!("{})", self.l6)
+                format!("{}. ", int_to_roman(self.l6).to_lowercase())
             }
             _ => String::new(),
         };
@@ -835,27 +1024,40 @@ where
     docx.add_paragraph(build(p))
 }
 
-/// 列表段落：根据层级设置左缩进，首行不再额外缩进。
-fn add_list_paragraph(docx: Docx, level: u8, prefix: &str, content: &[Inline]) -> Docx {
-    // 每加深一层缩进 1 个中文字符（200 hundredths-of-char = 2 char base + level）
-    let chars = (level.saturating_sub(1) as i32) * 100; // 0/100/200/300...
-    let p = Paragraph::new().align(AlignmentType::Both).line_spacing(
-        LineSpacing::new()
-            .line(LINE_BODY)
-            .line_rule(LineSpacingType::AtLeast),
-    );
-    let p = if chars > 0 {
-        p.indent(None, None, None, Some(chars))
-    } else {
-        p
-    };
+/// 列表段落：第一级编号缩进两个汉字，后续层级再逐级缩进两个汉字。
+fn add_list_paragraph(
+    docx: Docx,
+    level: u8,
+    prefix: &str,
+    content: &[Inline],
+    image_base_dir: &Path,
+) -> Docx {
+    // 正文为 14pt，一个汉字约 280 twips。编号起点先空两个汉字；每深入一级
+    // 再增加两个汉字。正文使用两汉字宽的悬挂标签位，使换行与首行正文对齐。
+    const BASE_INDENT: i32 = 560;
+    const LEVEL_STEP: i32 = 560;
+    const LABEL_WIDTH: i32 = 560;
+    let left = BASE_INDENT + LABEL_WIDTH + i32::from(level.saturating_sub(1)) * LEVEL_STEP;
+    let p = Paragraph::new()
+        .align(AlignmentType::Both)
+        .indent(
+            Some(left),
+            Some(SpecialIndentType::Hanging(LABEL_WIDTH)),
+            None,
+            None,
+        )
+        .line_spacing(
+            LineSpacing::new()
+                .line(LINE_BODY)
+                .line_rule(LineSpacingType::AtLeast),
+        );
     let p = p.add_run(
         Run::new()
             .add_text(prefix.to_string())
             .fonts(font_set(FONT_BODY))
             .size(SIZE_BODY),
     );
-    let p = add_inlines(p, content);
+    let p = add_inlines(p, content, image_base_dir);
     docx.add_paragraph(p)
 }
 
@@ -888,8 +1090,23 @@ fn inline_run_style(ip: &Inline) -> (String, bool, bool) {
     }
 }
 
-fn add_inlines(mut p: Paragraph, inlines: &[Inline]) -> Paragraph {
+fn add_inlines(mut p: Paragraph, inlines: &[Inline], image_base_dir: &Path) -> Paragraph {
     for ip in inlines {
+        if let Inline::Image { alt, url, .. } = ip {
+            match crate::common::docx_image::load(url, image_base_dir, MAX_INLINE_IMAGE_WIDTH_EMU) {
+                Ok(pic) => p = p.add_run(Run::new().add_image(pic)),
+                Err(error) => {
+                    eprintln!("  警告：{error:#}");
+                    p = p.add_run(
+                        Run::new()
+                            .add_text(image_error_text(alt, url))
+                            .fonts(font_set(FONT_BODY))
+                            .size(SIZE_BODY),
+                    );
+                }
+            }
+            continue;
+        }
         let (text, bold, italic) = inline_run_style(ip);
         let mut run = Run::new().add_text(&text).size(SIZE_BODY);
         // 斜体在中文里用楷体表达（与 LaTeX `ItalicFont={FZKai-Z03}` 一致）
@@ -906,8 +1123,78 @@ fn add_inlines(mut p: Paragraph, inlines: &[Inline]) -> Paragraph {
     p
 }
 
+fn sole_image(inlines: &[Inline]) -> Option<(&str, &str)> {
+    let meaningful: Vec<&Inline> = inlines
+        .iter()
+        .filter(|inline| !matches!(inline, Inline::Text(text) if text.trim().is_empty()))
+        .collect();
+    match meaningful.as_slice() {
+        [Inline::Image { alt, url, .. }] => Some((alt.as_str(), url.as_str())),
+        _ => None,
+    }
+}
+
+fn image_error_text(alt: &str, url: &str) -> String {
+    let label = if alt.trim().is_empty() {
+        url
+    } else {
+        alt.trim()
+    };
+    format!("[图片加载失败：{label}]")
+}
+
+fn add_image_error_paragraph(docx: Docx, alt: &str, url: &str) -> Docx {
+    docx.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(image_error_text(alt, url))
+                .fonts(font_set(FONT_BODY))
+                .size(SIZE_BODY),
+        ),
+    )
+}
+
 fn page_break(docx: Docx) -> Docx {
     docx.add_paragraph(Paragraph::new().page_break_before(true))
+}
+
+fn add_table_caption(docx: Docx, caption: &str) -> Docx {
+    docx.add_paragraph(
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .keep_next(true)
+            .line_spacing(
+                LineSpacing::new()
+                    .before(120)
+                    .after(120)
+                    .line(LINE_BODY)
+                    .line_rule(LineSpacingType::AtLeast),
+            )
+            .add_run(
+                Run::new()
+                    .add_text(caption)
+                    .fonts(font_set(FONT_BODY))
+                    .size(SIZE_BODY),
+            ),
+    )
+}
+
+fn add_figure_caption(docx: Docx, caption: &str) -> Docx {
+    add_table_caption(docx, caption)
+}
+
+fn add_code_block(mut docx: Docx, content: &str) -> Docx {
+    for line in content.lines().filter(|line| !line.is_empty()) {
+        docx = add_body_paragraph(docx, |p| {
+            p.indent(Some(560), None, None, None).add_run(
+                Run::new()
+                    .add_text(line)
+                    .fonts(font_set(FONT_BODY))
+                    .size(SIZE_BODY),
+            )
+        });
+    }
+    docx
 }
 
 fn add_table(docx: Docx, rows: &[Vec<String>]) -> Docx {
@@ -974,6 +1261,17 @@ fn chinese_chapter(num: usize) -> String {
 mod tests {
     use super::*;
     use crate::common::ast::Inline;
+
+    fn paragraph_texts(docx: &Docx) -> Vec<String> {
+        docx.document
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                DocumentChild::Paragraph(paragraph) => Some(paragraph.raw_text()),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
     fn split_extracts_title_and_changelog() {
@@ -1059,5 +1357,115 @@ mod tests {
         assert_eq!(text, "[@a; @b]");
         assert!(!bold);
         assert!(!italic);
+    }
+
+    #[test]
+    fn cover_uses_front_matter_fields() {
+        let metadata = Metadata {
+            security: Some("机密".into()),
+            security_years: Some("5年".into()),
+            doc_type: Some("技术报告".into()),
+            doc_number: Some("XX-2026-001".into()),
+            version: Some("V2.1".into()),
+            institution: Some("某研究所".into()),
+            date: Some("2026-07".into()),
+            title: Some("系统报告".into()),
+            bibliography: None,
+        };
+        let docx = add_cover(Docx::new(), metadata.title.as_deref(), &metadata);
+        let text = paragraph_texts(&docx).join("\n");
+
+        for expected in [
+            "密级：机密★5年",
+            "编号：XX-2026-001",
+            "版本：V2.1",
+            "技术报告",
+            "系统报告",
+            "某研究所",
+            "2026 年 7 月",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+        }
+    }
+
+    #[test]
+    fn section_markers_avoid_duplicate_titles_and_support_h1_appendix() {
+        let blocks = parser::parse(
+            "<!-- [参考文献] -->\n# 参考文献\n- 条目\n<!-- [附录] -->\n# 数据集\n## 说明\n",
+        );
+        let mut emitter = MainEmitter::new();
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+        let texts = paragraph_texts(&docx);
+
+        assert_eq!(texts.iter().filter(|text| *text == "参考文献").count(), 1);
+        assert!(texts.iter().any(|text| text == "[1] 条目"));
+        assert!(texts.iter().any(|text| text == "附录 A 数据集"));
+        assert!(texts.iter().any(|text| text == "说明"));
+    }
+
+    #[test]
+    fn research_lists_use_expected_prefixes_and_hanging_indent() {
+        let mut state = ListState::default();
+        assert_eq!(state.next_prefix(1), "⑴ ");
+        assert_eq!(state.next_prefix(2), "① ");
+        assert_eq!(state.next_prefix(3), "(A) ");
+        assert_eq!(state.next_prefix(4), "(a) ");
+        assert_eq!(state.next_prefix(5), "I. ");
+        assert_eq!(state.next_prefix(6), "i. ");
+
+        let mut docx = Docx::new();
+        for level in 1..=6 {
+            docx = add_list_paragraph(
+                docx,
+                level,
+                "⑴ ",
+                &[Inline::Text(format!("第{level}级"))],
+                Path::new("."),
+            );
+        }
+        for (index, child) in docx.document.children.iter().enumerate() {
+            let paragraph = match child {
+                DocumentChild::Paragraph(paragraph) => paragraph,
+                other => panic!("expected paragraph, got {other:?}"),
+            };
+            let indent = paragraph.property.indent.as_ref().expect("list indent");
+            assert_eq!(indent.start, Some(1120 + index as i32 * 560));
+            assert!(matches!(
+                indent.special_indent,
+                Some(SpecialIndentType::Hanging(560))
+            ));
+        }
+        let first = match &docx.document.children[0] {
+            DocumentChild::Paragraph(paragraph) => paragraph,
+            other => panic!("expected paragraph, got {other:?}"),
+        };
+        assert_eq!(first.raw_text(), "⑴ 第1级");
+    }
+
+    #[test]
+    fn third_chapter_numbers_table_and_embeds_numbered_figure() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("figure.png");
+        image::DynamicImage::new_rgb8(80, 40)
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+        let blocks = parser::parse(
+            "<!-- [正文] -->\n## 1 第一章\n## 2 第二章\n## 3 第三章标题\n\
+             Table: 数据表\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n\
+             ![结构图](figure.png)\n",
+        );
+        let mut emitter = MainEmitter::with_image_base(dir.path().to_path_buf());
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+        let texts = paragraph_texts(&docx);
+
+        assert!(texts.iter().any(|text| text == "第三章 第三章标题"));
+        assert!(texts.iter().any(|text| text == "表 3.1 数据表"));
+        assert!(texts.iter().any(|text| text == "图 3.1 结构图"));
+        assert!(docx.document.children.iter().any(|child| match child {
+            DocumentChild::Paragraph(paragraph) => paragraph.children.iter().any(|child| {
+                matches!(child, ParagraphChild::Run(run) if run.children.iter().any(|child| matches!(child, RunChild::Drawing(_))))
+            }),
+            _ => false,
+        }));
     }
 }

@@ -1,8 +1,6 @@
 //! Markdown → IR 解析器。
 //!
-//! 输出 [`Vec<Block>`]，供 `tex_official` / `docx_research` 等 emitter 消费。
-//! `docx_official` 第一版仍直接吃字符串，未走此路径——这样在阶段 1 保留
-//! 与原 md_to_docx_rust 的字节一致性。
+//! 输出 [`Vec<Block>`]，供 `tex_official` / `docx_research` / `docx_official` 等 emitter 消费。
 //!
 //! 处理流程：
 //! 1. 全局做一遍 [`common::quotes::convert_quotes`] 把所有引号正规化为中文圆引号；
@@ -23,6 +21,7 @@ pub fn parse(content: &str) -> Vec<Block> {
     let lines: Vec<String> = normalize_lines_except_code(content);
 
     let mut blocks: Vec<Block> = Vec::new();
+    let mut list_indents: Vec<(usize, u8)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         let raw = &lines[i];
@@ -30,6 +29,7 @@ pub fn parse(content: &str) -> Vec<Block> {
 
         // 1) 区段标记 `<!-- [...] -->`
         if let Some(kind) = markers::detect(line) {
+            list_indents.clear();
             blocks.push(Block::Marker(kind));
             i += 1;
             continue;
@@ -37,6 +37,7 @@ pub fn parse(content: &str) -> Vec<Block> {
 
         // 2) 标题 `#` ~ `######`（尾部 `{#id}` 剥离为交叉引用锚点）
         if line.starts_with('#') {
+            list_indents.clear();
             let mut level: u8 = 0;
             let mut rest = line;
             while rest.starts_with('#') && level < 6 {
@@ -55,6 +56,7 @@ pub fn parse(content: &str) -> Vec<Block> {
 
         // 3) 代码块 ```...```
         if line.starts_with("```") {
+            list_indents.clear();
             let (parsed, new_i) = parse_code_block(&lines, i);
             if let Some((lang, content)) = parsed {
                 blocks.push(Block::CodeBlock { lang, content });
@@ -69,6 +71,7 @@ pub fn parse(content: &str) -> Vec<Block> {
 
         // 4) 表格 (must check for table first to avoid confusing | with text)
         if table::is_table_line(line) {
+            list_indents.clear();
             let leading_caption = take_leading_table_caption(&mut blocks);
             let (parsed, new_i) = table::parse_table(&lines, i);
             if let Some(rows) = parsed {
@@ -98,7 +101,8 @@ pub fn parse(content: &str) -> Vec<Block> {
         }
 
         // 4) 列表项
-        if let Some((ordered, level, content)) = detect_list(raw) {
+        if let Some((ordered, indent, content)) = detect_list(raw) {
+            let level = resolve_list_level(&mut list_indents, indent);
             blocks.push(Block::List {
                 ordered,
                 level,
@@ -116,6 +120,7 @@ pub fn parse(content: &str) -> Vec<Block> {
         }
 
         // 6) 普通段落
+        list_indents.clear();
         blocks.push(Block::Paragraph(inline::parse(line)));
         i += 1;
     }
@@ -259,31 +264,55 @@ fn normalize_lines_except_code(content: &str) -> Vec<String> {
     lines
 }
 
-/// 列表行识别：返回 `(ordered, level, 去前缀的文本)`。
-///
-/// `level` 由前导空白长度推断，与原 docx_official 行为对齐：
-/// `0 → 1`、`1..=4 → 2`、`5..=8 → 3`、`9..=12 → 4`、`13..=16 → 5`、其他 → 6。
-fn detect_list(raw: &str) -> Option<(bool, u8, String)> {
+/// 列表行识别：返回 `(ordered, 前导空白列数, 去前缀的文本)`。
+fn detect_list(raw: &str) -> Option<(bool, usize, String)> {
     let trimmed_start = raw.trim_start();
     if trimmed_start.is_empty() {
         return None;
     }
 
     let indent = raw.len() - trimmed_start.len();
-    let level = indent_to_level(indent);
-
     if let Some(rest) = trimmed_start.strip_prefix("- ") {
-        return Some((false, level, rest.trim().to_string()));
+        return Some((false, indent, rest.trim().to_string()));
     }
     if let Some(rest) = trimmed_start.strip_prefix("* ") {
-        return Some((false, level, rest.trim().to_string()));
+        return Some((false, indent, rest.trim().to_string()));
     }
     let re = numbered_list_regex();
     if re.is_match(trimmed_start) {
         let stripped = re.replace(trimmed_start, "").to_string();
-        return Some((true, level, stripped));
+        return Some((true, indent, stripped));
     }
     None
+}
+
+/// 把连续列表中的实际缩进变化映射为最多六级层级。
+///
+/// 相邻列表项只要缩进增加，就进入下一层，因此 2 空格和 4 空格两种常见写法
+/// 都能稳定表达多层列表。列表从缩进位置开始且缺少父项时，保留旧规则作为回退，
+/// 兼容既有文档中独立书写的二级、三级列表片段。
+fn resolve_list_level(indents: &mut Vec<(usize, u8)>, indent: usize) -> u8 {
+    if let Some(position) = indents.iter().position(|(known, _)| *known == indent) {
+        let level = indents[position].1;
+        indents.truncate(position + 1);
+        return level;
+    }
+
+    if let Some(&(current_indent, current_level)) = indents.last() {
+        if indent > current_indent {
+            let level = current_level.saturating_add(1).min(6);
+            indents.push((indent, level));
+            return level;
+        }
+
+        while indents.last().is_some_and(|(known, _)| *known > indent) {
+            indents.pop();
+        }
+    }
+
+    let level = indent_to_level(indent);
+    indents.push((indent, level));
+    level
 }
 
 fn indent_to_level(indent: usize) -> u8 {
@@ -565,6 +594,29 @@ mod tests {
             })
             .collect();
         assert_eq!(levels, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn lists_accept_two_space_multilevel_indentation() {
+        let md = "- 一级\n  - 二级\n    - 三级\n      - 四级\n        - 五级\n          - 六级\n";
+        let blocks = parse(md);
+        let levels: Vec<u8> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::List { level, .. } => Some(*level),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(levels, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn independent_indented_list_keeps_legacy_level() {
+        let md = "说明文字\n      - 独立三级列表\n";
+        let blocks = parse(md);
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, Block::List { level: 3, .. })));
     }
 
     #[test]

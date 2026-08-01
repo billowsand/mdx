@@ -72,6 +72,17 @@ pub fn parse(content: &str) -> (Metadata, String) {
     (metadata, body)
 }
 
+/// 把常见年月写法统一为“YYYY 年 M 月”；无法识别时保留原文。
+pub fn normalize_date(raw: &str) -> String {
+    if let Ok(re) = regex::Regex::new(r"^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*月?$") {
+        if let Some(caps) = re.captures(raw.trim()) {
+            let month: u32 = caps[2].parse().unwrap_or(0);
+            return format!("{} 年 {} 月", &caps[1], month);
+        }
+    }
+    raw.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +127,13 @@ mod tests {
         let (meta, body) = parse(md);
         assert_eq!(meta, Metadata::default());
         assert_eq!(body, md);
+    }
+
+    #[test]
+    fn normalizes_cover_date_to_month() {
+        assert_eq!(normalize_date("2026-07"), "2026 年 7 月");
+        assert_eq!(normalize_date("2026/7"), "2026 年 7 月");
+        assert_eq!(normalize_date("2026年07月"), "2026 年 7 月");
+        assert_eq!(normalize_date("二〇二六年七月"), "二〇二六年七月");
     }
 }

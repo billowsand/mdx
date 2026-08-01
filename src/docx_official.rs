@@ -1,15 +1,31 @@
 //! 公文 → docx pipeline。
 //!
-//! 第一版整体移植自 md2docx/md_to_docx_rust/src/main.rs，工具函数后续阶段会
-//! 抽到 common/，此处保留行内副本以最大程度避免行为漂移。
+//! 消费 [`crate::parser`] 产出的 [`Block`] AST，按公文风格输出 DOCX。
+//!
+//! 字体 / 字号 / 编号体系与原 md_to_docx_rust 保持一致：
+//! - H1：方正小标宋简体，二号(44hp)，居中，后跟空行
+//! - H2：黑体，三号(32hp)，"一、"
+//! - H3：楷体_GB2312，三号(32hp)，"（一）"
+//! - H4：仿宋_GB2312，三号(32hp)，"1."
+//! - H5：仿宋_GB2312，三号(32hp)，加粗，"(1)"
+//! - 正文：仿宋_GB2312，三号(32hp)，首行缩进 2 字符，固定行距 29pt
+//! - 列表：6 级前缀循环 ①②③ → ⑴⑵⑶ → a.b. → I.II. → (A)(B) → 1)2)
+//!
+//! 共享逻辑（引号正规化、标题去编号、行内格式拆分、表格解析、编号转换）
+//! 统一由 `common/` 与 `parser` 提供，本模块只负责 DOCX 渲染。
 
 use anyhow::{Context, Result};
 use docx_rs::*;
-use regex::Regex;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-// ===== 常量 =====
+use crate::common::ast::{Block, Inline, MarkerKind};
+use crate::common::front_matter;
+use crate::common::inline;
+use crate::common::numbering::{int_to_roman, number_to_chinese, number_to_uppercase_letter};
+use crate::parser;
+
+// ===== 圆圈数字（列表前缀用） =====
 const CIRCLE_NUMBERS_1: &[&str] = &[
     "⑴", "⑵", "⑶", "⑷", "⑸", "⑹", "⑺", "⑻", "⑼", "⑽", "⑾", "⑿", "⒀", "⒁", "⒂", "⒃", "⒄", "⒅", "⒆",
     "⒇",
@@ -19,310 +35,121 @@ const CIRCLE_NUMBERS_2: &[&str] = &[
     "⑳",
 ];
 
-// ===== 工具函数 =====
+// ===== 字体 =====
+const FONT_TITLE: &str = "方正小标宋简体";
+const FONT_HEAD: &str = "黑体";
+const FONT_KAI: &str = "楷体_GB2312";
+const FONT_BODY: &str = "仿宋_GB2312";
+const FONT_SONG: &str = "宋体";
+
+// ===== 字号（半磅 half-points，1pt = 2hp） =====
+const SIZE_TITLE: usize = 44; // 二号
+const SIZE_BODY: usize = 32; // 三号
+const SIZE_TABLE: usize = 28; // 四号
+const SIZE_FOOTER: usize = 28; // 四号
+
+// ===== 行距 / 缩进 (twips, 1pt = 20twips) =====
+const LINE_BODY: i32 = 580; // 29pt 固定行距
+const INDENT_FIRST_LINE: i32 = 640; // 首行缩进 2 字符 (2 × 16pt × 20twips)
+const MAX_IMAGE_WIDTH_EMU: u32 = 5_600_000;
+const MAX_INLINE_IMAGE_WIDTH_EMU: u32 = 1_800_000;
 
 fn font_set(name: &str) -> RunFonts {
     RunFonts::new().ascii(name).hi_ansi(name).east_asia(name)
 }
 
-fn number_to_chinese(num: usize) -> String {
-    let chinese_nums = [
-        "", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
-    ];
-    if num <= 10 {
-        chinese_nums[num].to_string()
-    } else if num < 20 {
-        format!("十{}", chinese_nums[num - 10])
-    } else if num < 100 {
-        let tens = num / 10;
-        let ones = num % 10;
-        if ones == 0 {
-            format!("{}十", chinese_nums[tens])
-        } else {
-            format!("{}十{}", chinese_nums[tens], chinese_nums[ones])
-        }
-    } else {
-        num.to_string()
+// ===== 公共入口 =====
+
+pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
+    let input_kind = crate::input::classify(input)?;
+    let raw = crate::input::collect_raw(input)?;
+    let (_metadata, content) = front_matter::parse(&raw);
+    let content = crate::input::strip_horizontal_rules(&content);
+    let output_path = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| crate::input::default_output(input, "docx"));
+
+    println!("正在转换: {}", input.display());
+
+    let image_base_dir = match input_kind {
+        crate::input::InputKind::Directory => input.to_path_buf(),
+        crate::input::InputKind::File => input.parent().unwrap_or(Path::new(".")).to_path_buf(),
+    };
+
+    let blocks = parser::parse(&content);
+    let mut emitter = OfficialEmitter::with_image_base(image_base_dir);
+    let docx = emitter.base_docx();
+    let docx = emitter.emit_all(docx, &blocks);
+
+    if let Some(dir) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("创建输出目录 {} 失败", dir.display()))?;
     }
+    let file = File::create(&output_path)
+        .with_context(|| format!("创建输出文件 {} 失败", output_path.display()))?;
+    docx.build()
+        .pack(file)
+        .with_context(|| format!("写入 docx {} 失败", output_path.display()))?;
+
+    println!("[完成] 转换完成: {}", output_path.display());
+    Ok(())
 }
 
-fn int_to_roman(num: usize) -> String {
-    let val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
-    let syms = [
-        "M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I",
-    ];
-    let mut num = num;
-    let mut result = String::new();
-    for i in 0..val.len() {
-        while num >= val[i] {
-            result.push_str(syms[i]);
-            num -= val[i];
-        }
-    }
-    result
-}
+// ============================================================
+// 转换器
+// ============================================================
 
-fn number_to_uppercase_letter(num: usize) -> String {
-    let mut num = num;
-    let mut result = String::new();
-    while num > 0 {
-        let remainder = (num - 1) % 26;
-        result.insert(0, (65 + remainder) as u8 as char);
-        num = (num - 1) / 26;
-    }
-    result
-}
-
-fn convert_quotes(text: &str) -> String {
-    let mut text = text.to_string();
-    text = text.replace(['\u{201c}', '\u{201d}'], "\"");
-    text = text.replace(['\u{2018}', '\u{2019}'], "'");
-
-    let mut chars: Vec<char> = text.chars().collect();
-    let mut in_double = false;
-    for ch in &mut chars {
-        if *ch == '"' {
-            *ch = if !in_double { '\u{201c}' } else { '\u{201d}' };
-            in_double = !in_double;
-        }
-    }
-    let text: String = chars.into_iter().collect();
-
-    let mut chars: Vec<char> = text.chars().collect();
-    let mut in_single = false;
-    for ch in &mut chars {
-        if *ch == '\'' {
-            *ch = if !in_single { '\u{2018}' } else { '\u{2019}' };
-            in_single = !in_single;
-        }
-    }
-    chars.into_iter().collect()
-}
-
-fn clean_heading_number(text: &str) -> String {
-    let patterns = [
-        // 1. 第X章/节/条/部分（支持中文数字或阿拉伯数字）
-        r"^第[一二三四五六七八九十百零\d]+[章节条部分]\s*[、.．]?\s*",
-        // 2. 全角括号中文数字 （一）（二）
-        r"^[（(][一二三四五六七八九十百零]+[）)]\s*[、.．]?\s*",
-        // 3. 中文数字+顿号/点号
-        r"^[一二三四五六七八九十百零]+[、,.．]\s*",
-        // 4. 全角括号阿拉伯数字 （1）（2）
-        r"^[（(]\d+[）)]\s*[、.．]?\s*",
-        // 5. 半角括号阿拉伯数字 (1)(2)
-        r"^\(\d+\)\s*[、.．]?\s*",
-        // 6. 多级数字编号 1.1 / 1.1.1 / 1.1.1.1（必须在单级数字之前）
-        r"^\d+(?:\.\d+)+[.．]?\s*",
-        // 7. 阿拉伯数字+点号/顿号+空格
-        r"^\d+[.．、]\s+",
-        // 8. 阿拉伯数字+空格（要求后面有非数字字符，用[^\d\s]近似）
-        r"^\d+\s+[^\d\s]",
-        // 9. 圆圈数字 ①②③
-        r"^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿]\s*[.．、]?\s*",
-        // 10. 带圈数字 ⑴⑵⑶
-        r"^[⑴⑵⑶⑷⑸⑹⑺⑻⑼⑽⑾⑿⒀⒁⒂⒃⒄⒅⒆⒇]\s*[.．、]?\s*",
-        // 11. 罗马数字 ⅠⅡⅢ
-        r"^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.．、]?\s*",
-        // 12. 字母编号 A. a)
-        r"^[A-Za-z][)）.．]\s*",
-    ];
-    let mut cleaned = text.to_string();
-    for pat in &patterns {
-        if let Ok(re) = Regex::new(pat) {
-            cleaned = re.replace(&cleaned, "").to_string();
-        }
-    }
-    cleaned.trim().to_string()
-}
-
-// ===== 表格解析 =====
-
-fn is_table_line(line: &str) -> bool {
-    line.contains('|') && line.trim().starts_with('|') && line.trim().ends_with('|')
-}
-
-fn is_table_separator(line: &str) -> bool {
-    let line = line.trim();
-    if !line.starts_with('|') || !line.ends_with('|') {
-        return false;
-    }
-    let content = &line[1..line.len() - 1];
-    for part in content.split('|') {
-        let part = part.trim();
-        if part.is_empty() || !part.chars().all(|c| c == '-' || c == ':' || c == ' ') {
-            return false;
-        }
-    }
-    true
-}
-
-fn parse_table(lines: &[String], start_index: usize) -> (Option<Vec<Vec<String>>>, usize) {
-    let mut table_lines = Vec::new();
-    let mut i = start_index;
-
-    while i < lines.len() {
-        let line = lines[i].trim();
-        if is_table_line(line) {
-            table_lines.push(line.to_string());
-        } else if line.is_empty() && !table_lines.is_empty() {
-            i += 1;
-            if i < lines.len() && is_table_line(lines[i].trim()) {
-                continue;
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-        i += 1;
-    }
-
-    if table_lines.len() < 2 {
-        return (None, start_index);
-    }
-
-    let mut table_data = Vec::new();
-    let mut separator_found = false;
-
-    for line in &table_lines {
-        if is_table_separator(line) {
-            separator_found = true;
-            continue;
-        }
-        let mut line = line.trim();
-        if line.starts_with('|') {
-            line = &line[1..];
-        }
-        if line.ends_with('|') {
-            line = &line[..line.len() - 1];
-        }
-        let cells: Vec<String> = line.split('|').map(|s| s.trim().to_string()).collect();
-        table_data.push(cells);
-    }
-
-    if !separator_found || table_data.is_empty() {
-        return (None, start_index);
-    }
-
-    (Some(table_data), i)
-}
-
-// ===== 文本格式化 =====
-
-fn process_text_formatting(
-    mut p: Paragraph,
-    text: &str,
-    font_name: &str,
-    font_size: usize,
-    force_bold: bool,
-) -> Paragraph {
-    let text = convert_quotes(text);
-    let re = Regex::new(r"(\*\*.*?\*\*|\*.*?\*)").unwrap();
-    let mut last_end = 0;
-
-    for mat in re.find_iter(&text) {
-        if mat.start() > last_end {
-            let normal = &text[last_end..mat.start()];
-            let mut run = Run::new()
-                .add_text(normal)
-                .fonts(font_set(font_name))
-                .size(font_size);
-            if force_bold {
-                run = run.bold();
-            }
-            p = p.add_run(run);
-        }
-
-        let part = mat.as_str();
-        if part.starts_with("**") && part.ends_with("**") && part.len() >= 4 {
-            let inner = &part[2..part.len() - 2];
-            p = p.add_run(
-                Run::new()
-                    .add_text(inner)
-                    .bold()
-                    .fonts(font_set(font_name))
-                    .size(font_size),
-            );
-        } else if part.starts_with("*")
-            && part.ends_with("*")
-            && part.len() >= 2
-            && !part.starts_with("**")
-        {
-            let inner = &part[1..part.len() - 1];
-            let mut run = Run::new()
-                .add_text(inner)
-                .italic()
-                .fonts(font_set(font_name))
-                .size(font_size);
-            if force_bold {
-                run = run.bold();
-            }
-            p = p.add_run(run);
-        }
-
-        last_end = mat.end();
-    }
-
-    if last_end < text.len() {
-        let normal = &text[last_end..];
-        let mut run = Run::new()
-            .add_text(normal)
-            .fonts(font_set(font_name))
-            .size(font_size);
-        if force_bold {
-            run = run.bold();
-        }
-        p = p.add_run(run);
-    }
-
-    p
-}
-
-// ===== 转换器 =====
-
-struct Converter {
-    docx: Docx,
+struct OfficialEmitter {
     h2: usize,
     h3: usize,
     h4: usize,
     h5: usize,
+    list: ListState,
+    reference_mode: bool,
+    reference_counter: usize,
+    suppress_next_heading: Option<&'static str>,
+    table_counter: usize,
+    figure_counter: usize,
+    image_base_dir: PathBuf,
+}
+
+#[derive(Default)]
+struct ListState {
+    in_list: bool,
+    level: u8,
     l1: usize,
     l2: usize,
     l3: usize,
     l4: usize,
     l5: usize,
     l6: usize,
-    in_list: bool,
-    list_level: usize,
-    re_number_list: Regex,
-    re_number_prefix: Regex,
 }
 
-impl Converter {
+impl OfficialEmitter {
+    #[cfg(test)]
     fn new() -> Self {
-        let mut conv = Converter {
-            docx: Docx::new(),
+        Self::with_image_base(PathBuf::from("."))
+    }
+
+    fn with_image_base(image_base_dir: PathBuf) -> Self {
+        Self {
             h2: 0,
             h3: 0,
             h4: 0,
             h5: 0,
-            l1: 0,
-            l2: 0,
-            l3: 0,
-            l4: 0,
-            l5: 0,
-            l6: 0,
-            in_list: false,
-            list_level: 0,
-            re_number_list: Regex::new(r"^\d+\.").unwrap(),
-            re_number_prefix: Regex::new(r"^\d+\.\s*").unwrap(),
-        };
-        conv.setup_page();
-        conv
+            list: ListState::default(),
+            reference_mode: false,
+            reference_counter: 0,
+            suppress_next_heading: None,
+            table_counter: 0,
+            figure_counter: 0,
+            image_base_dir,
+        }
     }
 
-    fn setup_page(&mut self) {
-        let song_fonts = font_set("宋体");
+    /// 构建文档基础：页面边距 + 页脚（页码 "— N —" 格式）。
+    fn base_docx(&self) -> Docx {
+        let song_fonts = font_set(FONT_SONG);
         let footer = Footer::new().add_paragraph(
             Paragraph::new()
                 .align(AlignmentType::Center)
@@ -331,38 +158,47 @@ impl Converter {
                     Run::new()
                         .add_text("\u{2014} ")
                         .fonts(song_fonts.clone())
-                        .size(28),
+                        .size(SIZE_FOOTER),
                 )
                 .add_run(
                     Run::new()
                         .add_field_char(FieldCharType::Begin, false)
                         .fonts(song_fonts.clone())
-                        .size(28),
+                        .size(SIZE_FOOTER),
                 )
                 .add_run(
                     Run::new()
                         .add_instr_text(InstrText::PAGE(InstrPAGE {}))
                         .fonts(song_fonts.clone())
-                        .size(28),
+                        .size(SIZE_FOOTER),
                 )
                 .add_run(
                     Run::new()
                         .add_field_char(FieldCharType::Separate, false)
                         .fonts(song_fonts.clone())
-                        .size(28),
+                        .size(SIZE_FOOTER),
                 )
-                .add_run(Run::new().add_text("1").fonts(song_fonts.clone()).size(28))
+                .add_run(
+                    Run::new()
+                        .add_text("1")
+                        .fonts(song_fonts.clone())
+                        .size(SIZE_FOOTER),
+                )
                 .add_run(
                     Run::new()
                         .add_field_char(FieldCharType::End, false)
                         .fonts(song_fonts.clone())
-                        .size(28),
+                        .size(SIZE_FOOTER),
                 )
-                .add_run(Run::new().add_text(" \u{2014}").fonts(song_fonts).size(28)),
+                .add_run(
+                    Run::new()
+                        .add_text(" \u{2014}")
+                        .fonts(song_fonts)
+                        .size(SIZE_FOOTER),
+                ),
         );
 
-        let docx = std::mem::replace(&mut self.docx, Docx::new());
-        self.docx = docx
+        Docx::new()
             .page_margin(
                 PageMargin::new()
                     .top(2100) // 3.7cm
@@ -371,21 +207,229 @@ impl Converter {
                     .right(1474) // 2.6cm
                     .footer(1588), // footer_distance = 2.8cm
             )
-            .footer(footer);
+            .footer(footer)
     }
 
-    fn add_table(&mut self, table_data: Vec<Vec<String>>) {
-        if table_data.is_empty() {
-            return;
+    fn emit_all(&mut self, mut docx: Docx, blocks: &[Block]) -> Docx {
+        for b in blocks {
+            docx = self.emit(docx, b);
         }
-        let max_cols = table_data.iter().map(|r| r.len()).max().unwrap_or(0);
-        let rows = table_data.len();
-        if rows == 0 || max_cols == 0 {
-            return;
+        docx
+    }
+
+    fn emit(&mut self, docx: Docx, b: &Block) -> Docx {
+        match b {
+            Block::Heading { level, text } => {
+                self.list.reset();
+                if self
+                    .suppress_next_heading
+                    .take()
+                    .is_some_and(|expected| *level == 1 && text.trim() == expected)
+                {
+                    return docx;
+                }
+                self.emit_heading(docx, *level, text)
+            }
+            Block::Paragraph(inlines) => {
+                self.list.reset();
+                if let Some((alt, url)) = sole_image(inlines) {
+                    self.add_figure(docx, alt, url)
+                } else {
+                    self.add_body_paragraph(docx, inlines)
+                }
+            }
+            Block::List { level, content, .. } => {
+                let prefix = if self.reference_mode && *level == 1 {
+                    self.reference_counter += 1;
+                    format!("[{}] ", self.reference_counter)
+                } else {
+                    self.list.next_prefix(*level)
+                };
+                self.add_list_paragraph(docx, &prefix, content)
+            }
+            Block::Table { rows, caption } => {
+                self.list.reset();
+                let docx = if let Some(caption) = caption {
+                    self.table_counter += 1;
+                    add_caption_paragraph(docx, &format!("表 {} {}", self.table_counter, caption))
+                } else {
+                    docx
+                };
+                self.add_table(docx, rows)
+            }
+            Block::CodeBlock { content, .. } => {
+                self.list.reset();
+                self.add_code_block(docx, content)
+            }
+            Block::Marker(kind) => {
+                self.list.reset();
+                self.emit_marker(docx, *kind)
+            }
+            // 公文不使用区段标记和交叉引用锚点；空行沿用旧行为，不截断列表。
+            Block::Empty | Block::Label(_) => docx,
+        }
+    }
+
+    fn emit_marker(&mut self, docx: Docx, kind: MarkerKind) -> Docx {
+        self.reference_mode = matches!(kind, MarkerKind::Reference);
+        if self.reference_mode {
+            self.reference_counter = 0;
+        }
+        match kind {
+            MarkerKind::Abstract => {
+                self.suppress_next_heading = Some("摘要");
+                self.add_section_heading(docx, "摘要")
+            }
+            MarkerKind::Changelog => {
+                self.suppress_next_heading = Some("版本变更记录");
+                self.add_section_heading(docx, "版本变更记录")
+            }
+            MarkerKind::Reference => {
+                self.suppress_next_heading = Some("参考文献");
+                self.add_section_heading(docx, "参考文献")
+            }
+            MarkerKind::Body | MarkerKind::Appendix => {
+                self.h2 = 0;
+                self.h3 = 0;
+                self.h4 = 0;
+                self.h5 = 0;
+                docx
+            }
+        }
+    }
+
+    fn add_section_heading(&self, docx: Docx, text: &str) -> Docx {
+        docx.add_paragraph(heading_paragraph(
+            text,
+            FONT_TITLE,
+            SIZE_TITLE,
+            AlignmentType::Center,
+            false,
+        ))
+    }
+
+    fn emit_heading(&mut self, docx: Docx, level: u8, text: &str) -> Docx {
+        match level {
+            1 => {
+                self.h2 = 0;
+                self.h3 = 0;
+                self.h4 = 0;
+                self.h5 = 0;
+                let p =
+                    heading_paragraph(text, FONT_TITLE, SIZE_TITLE, AlignmentType::Center, false);
+                docx.add_paragraph(p).add_paragraph(Paragraph::new())
+            }
+            2 => {
+                self.h2 += 1;
+                self.h3 = 0;
+                self.h4 = 0;
+                self.h5 = 0;
+                let title = format!("{}、{}", number_to_chinese(self.h2), text);
+                let p = heading_paragraph(&title, FONT_HEAD, SIZE_BODY, AlignmentType::Left, false);
+                docx.add_paragraph(p)
+            }
+            3 => {
+                self.h3 += 1;
+                self.h4 = 0;
+                self.h5 = 0;
+                let title = format!("（{}）{}", number_to_chinese(self.h3), text);
+                let p = heading_paragraph(&title, FONT_KAI, SIZE_BODY, AlignmentType::Left, false);
+                docx.add_paragraph(p)
+            }
+            4 => {
+                self.h4 += 1;
+                self.h5 = 0;
+                let title = format!("{}.{}", self.h4, text);
+                let p = heading_paragraph(&title, FONT_BODY, SIZE_BODY, AlignmentType::Left, false);
+                docx.add_paragraph(p)
+            }
+            5 => {
+                self.h5 += 1;
+                let title = format!("({}){}", self.h5, text);
+                let p = heading_paragraph(&title, FONT_BODY, SIZE_BODY, AlignmentType::Left, true);
+                docx.add_paragraph(p)
+            }
+            _ => docx,
+        }
+    }
+
+    fn add_body_paragraph(&self, docx: Docx, inlines: &[Inline]) -> Docx {
+        let p = body_base();
+        let p = add_inlines(
+            p,
+            inlines,
+            FONT_BODY,
+            SIZE_BODY,
+            false,
+            Some(&self.image_base_dir),
+        );
+        docx.add_paragraph(p)
+    }
+
+    fn add_list_paragraph(&self, docx: Docx, prefix: &str, content: &[Inline]) -> Docx {
+        let p = body_base();
+        let p = p.add_run(
+            Run::new()
+                .add_text(prefix)
+                .fonts(font_set(FONT_BODY))
+                .size(SIZE_BODY),
+        );
+        let p = add_inlines(
+            p,
+            content,
+            FONT_BODY,
+            SIZE_BODY,
+            false,
+            Some(&self.image_base_dir),
+        );
+        docx.add_paragraph(p)
+    }
+
+    fn add_figure(&mut self, docx: Docx, alt: &str, url: &str) -> Docx {
+        match crate::common::docx_image::load(url, &self.image_base_dir, MAX_IMAGE_WIDTH_EMU) {
+            Ok(pic) => {
+                let has_caption = !alt.trim().is_empty();
+                let figure = Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .keep_next(has_caption)
+                    .add_run(Run::new().add_image(pic));
+                let docx = docx.add_paragraph(figure);
+                if has_caption {
+                    self.figure_counter += 1;
+                    add_caption_paragraph(
+                        docx,
+                        &format!("图 {} {}", self.figure_counter, alt.trim()),
+                    )
+                } else {
+                    docx
+                }
+            }
+            Err(error) => {
+                eprintln!("  警告：{error:#}");
+                add_image_error_paragraph(docx, alt, url)
+            }
+        }
+    }
+
+    /// 公文 DOCX 暂无专用代码样式，至少逐行保留代码内容，避免 AST 迁移后静默丢失。
+    fn add_code_block(&self, mut docx: Docx, content: &str) -> Docx {
+        for line in content.lines().filter(|line| !line.is_empty()) {
+            docx = self.add_body_paragraph(docx, &[Inline::Text(line.to_string())]);
+        }
+        docx
+    }
+
+    fn add_table(&self, docx: Docx, rows: &[Vec<String>]) -> Docx {
+        if rows.is_empty() {
+            return docx;
+        }
+        let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        if max_cols == 0 {
+            return docx;
         }
 
         let mut table_rows = Vec::new();
-        for (row_idx, row_data) in table_data.iter().enumerate() {
+        for (row_idx, row_data) in rows.iter().enumerate() {
             let mut cells = Vec::new();
             for col_idx in 0..max_cols {
                 let cell_data = row_data.get(col_idx).map(|s| s.as_str()).unwrap_or("");
@@ -395,15 +439,10 @@ impl Converter {
                     AlignmentType::Left
                 };
                 // 首行黑体、其余行仿宋_GB2312；字号统一四号(28hp)。
-                // 不再整行强制加粗——交由 process_text_formatting 解析 cell 内的
-                // **加粗**/*斜体*，确保 markdown 行内格式在表格里同样生效。
-                let font = if row_idx == 0 {
-                    "黑体"
-                } else {
-                    "仿宋_GB2312"
-                };
+                // cell 内的 **加粗**/*斜体* 行内格式通过 inline::parse 解析。
+                let font = if row_idx == 0 { FONT_HEAD } else { FONT_BODY };
                 let p = Paragraph::new().align(align);
-                let p = process_text_formatting(p, cell_data, font, 28, false);
+                let p = add_inlines(p, &inline::parse(cell_data), font, SIZE_TABLE, false, None);
                 cells.push(TableCell::new().add_paragraph(p));
             }
             table_rows.push(TableRow::new(cells));
@@ -419,124 +458,23 @@ impl Converter {
                 .set(TableBorder::new(TableBorderPosition::InsideV).size(4)),
         );
 
-        let docx = std::mem::replace(&mut self.docx, Docx::new());
-        self.docx = docx.add_table(table);
+        docx.add_table(table)
+    }
+}
+
+// ============================================================
+// 列表前缀状态机
+// ============================================================
+
+impl ListState {
+    fn reset(&mut self) {
+        *self = Self::default();
     }
 
-    fn normal_base(&self) -> Paragraph {
-        Paragraph::new()
-            .align(AlignmentType::Both)
-            .line_spacing(
-                LineSpacing::new()
-                    .line_rule(LineSpacingType::Exact)
-                    .line(580)
-                    .before(0)
-                    .after(0),
-            )
-            .indent(None, Some(SpecialIndentType::FirstLine(640)), None, None)
-    }
-
-    fn add_paragraph(&mut self, p: Paragraph) {
-        let docx = std::mem::replace(&mut self.docx, Docx::new());
-        self.docx = docx.add_paragraph(p);
-    }
-
-    fn make_normal_paragraph(&self, text: &str) -> Paragraph {
-        process_text_formatting(self.normal_base(), text, "仿宋_GB2312", 32, false)
-    }
-
-    fn make_h1_paragraph(&self, text: &str) -> Paragraph {
-        let p = Paragraph::new()
-            .align(AlignmentType::Center)
-            .line_spacing(
-                LineSpacing::new()
-                    .line_rule(LineSpacingType::Exact)
-                    .line(580)
-                    .before(0)
-                    .after(0),
-            )
-            .indent(None, Some(SpecialIndentType::FirstLine(640)), None, None);
-        process_text_formatting(p, text, "方正小标宋简体", 44, false)
-    }
-
-    fn make_h2_paragraph(&self, text: &str) -> Paragraph {
-        let p = Paragraph::new()
-            .line_spacing(
-                LineSpacing::new()
-                    .line_rule(LineSpacingType::Exact)
-                    .line(580)
-                    .before(0)
-                    .after(0),
-            )
-            .indent(None, Some(SpecialIndentType::FirstLine(640)), None, None);
-        process_text_formatting(p, text, "黑体", 32, false)
-    }
-
-    fn make_h3_paragraph(&self, text: &str) -> Paragraph {
-        let p = Paragraph::new()
-            .line_spacing(
-                LineSpacing::new()
-                    .line_rule(LineSpacingType::Exact)
-                    .line(580)
-                    .before(0)
-                    .after(0),
-            )
-            .indent(None, Some(SpecialIndentType::FirstLine(640)), None, None);
-        process_text_formatting(p, text, "楷体_GB2312", 32, false)
-    }
-
-    fn make_h4_paragraph(&self, text: &str) -> Paragraph {
-        let p = Paragraph::new()
-            .line_spacing(
-                LineSpacing::new()
-                    .line_rule(LineSpacingType::Exact)
-                    .line(580)
-                    .before(0)
-                    .after(0),
-            )
-            .indent(None, Some(SpecialIndentType::FirstLine(640)), None, None);
-        process_text_formatting(p, text, "仿宋_GB2312", 32, false)
-    }
-
-    fn make_h5_paragraph(&self, text: &str) -> Paragraph {
-        let p = Paragraph::new()
-            .line_spacing(
-                LineSpacing::new()
-                    .line_rule(LineSpacingType::Exact)
-                    .line(580)
-                    .before(0)
-                    .after(0),
-            )
-            .indent(None, Some(SpecialIndentType::FirstLine(640)), None, None);
-        process_text_formatting(p, text, "仿宋_GB2312", 32, true)
-    }
-
-    fn make_list_paragraph(&self, prefix: &str, content: &str) -> Paragraph {
-        let p = self.normal_base();
-        let p = p.add_run(
-            Run::new()
-                .add_text(prefix)
-                .fonts(font_set("仿宋_GB2312"))
-                .size(32),
-        );
-        process_text_formatting(p, content, "仿宋_GB2312", 32, false)
-    }
-
-    fn reset_list_counters(&mut self) {
-        self.in_list = false;
-        self.list_level = 0;
-        self.l1 = 0;
-        self.l2 = 0;
-        self.l3 = 0;
-        self.l4 = 0;
-        self.l5 = 0;
-        self.l6 = 0;
-    }
-
-    fn get_list_prefix(&mut self, list_level: usize) -> String {
-        match list_level {
+    fn next_prefix(&mut self, level: u8) -> String {
+        let prefix = match level {
             1 => {
-                if !self.in_list || self.list_level > 1 {
+                if !self.in_list || self.level > 1 {
                     self.l2 = 0;
                     self.l3 = 0;
                     self.l4 = 0;
@@ -554,14 +492,14 @@ impl Converter {
                 }
             }
             2 => {
-                if !self.in_list || self.list_level != 2 {
-                    if self.list_level > 2 {
+                if !self.in_list || self.level != 2 {
+                    if self.level > 2 {
                         self.l3 = 0;
                         self.l4 = 0;
                         self.l5 = 0;
                         self.l6 = 0;
                     }
-                    if !self.in_list || self.list_level < 2 {
+                    if !self.in_list || self.level < 2 {
                         self.l2 = 0;
                         self.l3 = 0;
                         self.l4 = 0;
@@ -577,7 +515,7 @@ impl Converter {
                 }
             }
             3 => {
-                if !self.in_list || self.list_level < 3 {
+                if !self.in_list || self.level < 3 {
                     self.l3 = 0;
                     self.l4 = 0;
                     self.l5 = 0;
@@ -588,7 +526,7 @@ impl Converter {
                 format!("{}.", ch)
             }
             4 => {
-                if !self.in_list || self.list_level < 4 {
+                if !self.in_list || self.level < 4 {
                     self.l4 = 0;
                     self.l5 = 0;
                     self.l6 = 0;
@@ -597,7 +535,7 @@ impl Converter {
                 format!("{}.", int_to_roman(self.l4))
             }
             5 => {
-                if !self.in_list || self.list_level < 5 {
+                if !self.in_list || self.level < 5 {
                     self.l5 = 0;
                     self.l6 = 0;
                 }
@@ -605,164 +543,310 @@ impl Converter {
                 format!("({})", number_to_uppercase_letter(self.l5))
             }
             6 => {
-                if !self.in_list || self.list_level < 6 {
+                if !self.in_list || self.level < 6 {
                     self.l6 = 0;
                 }
                 self.l6 += 1;
                 format!("{})", self.l6)
             }
             _ => String::new(),
-        }
-    }
-
-    fn parse_markdown(&mut self, content: &str) {
-        let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        let mut i = 0;
-
-        while i < lines.len() {
-            let line = lines[i].trim();
-
-            // 处理标题
-            if line.starts_with('#') {
-                self.reset_list_counters();
-                let mut level = 0;
-                let mut rest = line;
-                while rest.starts_with('#') {
-                    level += 1;
-                    rest = &rest[1..];
-                }
-                let rest = rest.trim();
-                let rest = clean_heading_number(rest);
-
-                match level {
-                    1 => {
-                        self.h2 = 0;
-                        self.h3 = 0;
-                        self.h4 = 0;
-                        self.h5 = 0;
-                        let p = self.make_h1_paragraph(&rest);
-                        self.add_paragraph(p);
-                        self.add_paragraph(Paragraph::new());
-                    }
-                    2 => {
-                        self.h2 += 1;
-                        self.h3 = 0;
-                        self.h4 = 0;
-                        self.h5 = 0;
-                        let num = number_to_chinese(self.h2);
-                        let title = format!("{}、{}", num, rest);
-                        let p = self.make_h2_paragraph(&title);
-                        self.add_paragraph(p);
-                    }
-                    3 => {
-                        self.h3 += 1;
-                        self.h4 = 0;
-                        self.h5 = 0;
-                        let num = number_to_chinese(self.h3);
-                        let title = format!("（{}）{}", num, rest);
-                        let p = self.make_h3_paragraph(&title);
-                        self.add_paragraph(p);
-                    }
-                    4 => {
-                        self.h4 += 1;
-                        self.h5 = 0;
-                        let title = format!("{}.{}", self.h4, rest);
-                        let p = self.make_h4_paragraph(&title);
-                        self.add_paragraph(p);
-                    }
-                    5 => {
-                        self.h5 += 1;
-                        let title = format!("({}){}", self.h5, rest);
-                        let p = self.make_h5_paragraph(&title);
-                        self.add_paragraph(p);
-                    }
-                    _ => {}
-                }
-            }
-            // 处理表格
-            else if is_table_line(line) {
-                self.reset_list_counters();
-                let (table_data, new_i) = parse_table(&lines, i);
-                if let Some(data) = table_data {
-                    self.add_table(data);
-                    i = new_i - 1;
-                } else {
-                    let p = self.make_normal_paragraph(line);
-                    self.add_paragraph(p);
-                }
-            }
-            // 处理列表
-            else if line.starts_with("- ")
-                || line.starts_with("* ")
-                || self.re_number_list.is_match(line)
-            {
-                let indent_level = lines[i].len() - lines[i].trim_start().len();
-                let list_level = match indent_level {
-                    0 => 1,
-                    1..=4 => 2,
-                    5..=8 => 3,
-                    9..=12 => 4,
-                    13..=16 => 5,
-                    _ => 6,
-                };
-
-                let content = if line.starts_with("- ") || line.starts_with("* ") {
-                    line[2..].trim().to_string()
-                } else {
-                    self.re_number_prefix.replace(line, "").to_string()
-                };
-
-                let prefix = self.get_list_prefix(list_level);
-                let p = self.make_list_paragraph(&prefix, &content);
-                self.add_paragraph(p);
-                self.in_list = true;
-                self.list_level = list_level;
-            }
-            // 处理空行
-            else if line.is_empty() {
-                // 忽略空行
-            }
-            // 处理普通文本
-            else {
-                self.reset_list_counters();
-                let p = self.make_normal_paragraph(line);
-                self.add_paragraph(p);
-            }
-
-            i += 1;
-        }
-    }
-
-    fn write(&self, output: &Path) -> Result<()> {
-        if let Some(dir) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("创建输出目录 {} 失败", dir.display()))?;
-        }
-        let file = File::create(output)
-            .with_context(|| format!("创建输出文件 {} 失败", output.display()))?;
-        self.docx
-            .clone()
-            .build()
-            .pack(file)
-            .with_context(|| format!("写入 docx {} 失败", output.display()))?;
-        Ok(())
+        };
+        self.in_list = true;
+        self.level = level;
+        prefix
     }
 }
 
-// ===== 公共入口 =====
+// ============================================================
+// 段落 / 行内格式构造工具
+// ============================================================
 
-pub fn run(input: &Path, output: Option<&Path>) -> Result<()> {
-    let content = crate::input::collect(input)?;
-    let output_path = output
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| crate::input::default_output(input, "docx"));
+/// 公文段落基础：两端对齐、固定行距 29pt、首行缩进 2 字符。
+fn body_base() -> Paragraph {
+    Paragraph::new()
+        .align(AlignmentType::Both)
+        .line_spacing(
+            LineSpacing::new()
+                .line_rule(LineSpacingType::Exact)
+                .line(LINE_BODY)
+                .before(0)
+                .after(0),
+        )
+        .indent(
+            None,
+            Some(SpecialIndentType::FirstLine(INDENT_FIRST_LINE)),
+            None,
+            None,
+        )
+}
 
-    println!("正在转换: {}", input.display());
+/// 标题段落：固定行距 29pt、首行缩进 2 字符，字体 / 字号 / 对齐 / 加粗由参数控制。
+fn heading_paragraph(
+    text: &str,
+    font: &str,
+    size: usize,
+    align: AlignmentType,
+    force_bold: bool,
+) -> Paragraph {
+    let p = Paragraph::new()
+        .align(align)
+        .line_spacing(
+            LineSpacing::new()
+                .line_rule(LineSpacingType::Exact)
+                .line(LINE_BODY)
+                .before(0)
+                .after(0),
+        )
+        .indent(
+            None,
+            Some(SpecialIndentType::FirstLine(INDENT_FIRST_LINE)),
+            None,
+            None,
+        );
+    add_inlines(p, &inline::parse(text), font, size, force_bold, None)
+}
 
-    let mut conv = Converter::new();
-    conv.parse_markdown(&content);
-    conv.write(&output_path)?;
+/// 把 Inline 序列渲染为 Run 并添加到段落。
+///
+/// 与原 `process_text_formatting` 行为一致：
+/// - `Inline::Bold` → 加粗 Run（扁平化子节点为纯文本）
+/// - `Inline::Italic` → 斜体 Run
+/// - 其他类型 → 普通 Run，`force_bold` 时附加加粗
+fn add_inlines(
+    mut p: Paragraph,
+    inlines: &[Inline],
+    font: &str,
+    size: usize,
+    force_bold: bool,
+    image_base_dir: Option<&Path>,
+) -> Paragraph {
+    for ip in inlines {
+        if let (Inline::Image { alt, url, .. }, Some(base_dir)) = (ip, image_base_dir) {
+            match crate::common::docx_image::load(url, base_dir, MAX_INLINE_IMAGE_WIDTH_EMU) {
+                Ok(pic) => p = p.add_run(Run::new().add_image(pic)),
+                Err(error) => {
+                    eprintln!("  警告：{error:#}");
+                    p = p.add_run(
+                        Run::new()
+                            .add_text(image_error_text(alt, url))
+                            .fonts(font_set(font))
+                            .size(size),
+                    );
+                }
+            }
+            continue;
+        }
+        let (text, bold, italic) = match ip {
+            Inline::Text(t) => (t.clone(), false, false),
+            Inline::Bold(children) => (inline::flatten(children), true, false),
+            Inline::Italic(children) => (inline::flatten(children), false, true),
+            Inline::Code(t) => (t.clone(), false, false),
+            Inline::Link { text, .. } => (text.clone(), false, false),
+            Inline::Image { alt, .. } => (alt.clone(), false, false),
+            Inline::CrossRef(id) => (id.clone(), false, false),
+            Inline::Citation(keys) => (
+                format!(
+                    "[{}]",
+                    keys.iter()
+                        .map(|k| format!("@{k}"))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+                false,
+                false,
+            ),
+            Inline::Footnote(t) => (format!("（{}）", t), false, false),
+        };
+        let mut run = Run::new().add_text(&text).fonts(font_set(font)).size(size);
+        if bold || force_bold {
+            run = run.bold();
+        }
+        if italic {
+            run = run.italic();
+        }
+        p = p.add_run(run);
+    }
+    p
+}
 
-    println!("[完成] 转换完成: {}", output_path.display());
-    Ok(())
+fn sole_image(inlines: &[Inline]) -> Option<(&str, &str)> {
+    let meaningful: Vec<&Inline> = inlines
+        .iter()
+        .filter(|inline| !matches!(inline, Inline::Text(text) if text.trim().is_empty()))
+        .collect();
+    match meaningful.as_slice() {
+        [Inline::Image { alt, url, .. }] => Some((alt.as_str(), url.as_str())),
+        _ => None,
+    }
+}
+
+fn image_error_text(alt: &str, url: &str) -> String {
+    let label = if alt.trim().is_empty() {
+        url
+    } else {
+        alt.trim()
+    };
+    format!("[图片加载失败：{label}]")
+}
+
+fn add_image_error_paragraph(docx: Docx, alt: &str, url: &str) -> Docx {
+    docx.add_paragraph(
+        Paragraph::new().align(AlignmentType::Center).add_run(
+            Run::new()
+                .add_text(image_error_text(alt, url))
+                .fonts(font_set(FONT_BODY))
+                .size(SIZE_BODY),
+        ),
+    )
+}
+
+fn add_caption_paragraph(docx: Docx, caption: &str) -> Docx {
+    docx.add_paragraph(
+        Paragraph::new()
+            .align(AlignmentType::Center)
+            .keep_next(true)
+            .line_spacing(
+                LineSpacing::new()
+                    .before(80)
+                    .after(80)
+                    .line(LINE_BODY)
+                    .line_rule(LineSpacingType::Exact),
+            )
+            .add_run(
+                Run::new()
+                    .add_text(caption)
+                    .fonts(font_set(FONT_BODY))
+                    .size(SIZE_TABLE),
+            ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paragraphs(docx: &Docx) -> Vec<&Paragraph> {
+        docx.document
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                DocumentChild::Paragraph(p) => Some(p.as_ref()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn run_text(run: &Run) -> String {
+        run.children
+            .iter()
+            .filter_map(|child| match child {
+                RunChild::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn paragraph_text(paragraph: &Paragraph) -> String {
+        paragraph
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                ParagraphChild::Run(run) => Some(run_text(run)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn table_caption_is_preserved_before_table() {
+        let blocks = parser::parse("Table: 产品清单\n\n| 名称 | 数量 |\n|---|---|\n| A | 1 |\n");
+        let mut emitter = OfficialEmitter::new();
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+
+        assert!(matches!(
+            docx.document.children.as_slice(),
+            [DocumentChild::Paragraph(_), DocumentChild::Table(_)]
+        ));
+        let captions: Vec<String> = paragraphs(&docx)
+            .into_iter()
+            .map(paragraph_text)
+            .filter(|text| !text.is_empty())
+            .collect();
+        assert_eq!(captions, vec!["表 1 产品清单"]);
+    }
+
+    #[test]
+    fn code_block_content_is_preserved_and_resets_list() {
+        let blocks = parser::parse("- 第一项\n```rust\nlet s = \"hello\";\n```\n- 新列表\n");
+        let mut emitter = OfficialEmitter::new();
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+        let texts: Vec<String> = paragraphs(&docx).into_iter().map(paragraph_text).collect();
+
+        assert_eq!(
+            texts,
+            vec!["①第一项", "let s = &quot;hello&quot;;", "①新列表"]
+        );
+    }
+
+    #[test]
+    fn heading_renders_inline_emphasis_without_markers() {
+        let blocks = parser::parse("## **重点**和*说明*\n");
+        let mut emitter = OfficialEmitter::new();
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+        let heading = paragraphs(&docx)[0];
+        let runs: Vec<&Run> = heading
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                ParagraphChild::Run(run) => Some(run.as_ref()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(paragraph_text(heading), "一、重点和说明");
+        assert!(runs
+            .iter()
+            .any(|run| { run_text(run) == "重点" && run.run_property.bold.is_some() }));
+        assert!(runs
+            .iter()
+            .any(|run| { run_text(run) == "说明" && run.run_property.italic.is_some() }));
+    }
+
+    #[test]
+    fn section_markers_render_headings_and_reference_numbers() {
+        let blocks = parser::parse(
+            "<!-- [摘要] -->\n# 摘要\n摘要正文\n<!-- [参考文献] -->\n# 参考文献\n- 条目\n",
+        );
+        let mut emitter = OfficialEmitter::new();
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+        let texts: Vec<String> = paragraphs(&docx).into_iter().map(paragraph_text).collect();
+
+        assert_eq!(texts.iter().filter(|text| *text == "摘要").count(), 1);
+        assert_eq!(texts.iter().filter(|text| *text == "参考文献").count(), 1);
+        assert!(texts.iter().any(|text| text == "[1] 条目"));
+    }
+
+    #[test]
+    fn tables_and_figures_are_numbered_and_image_is_embedded() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("figure.png");
+        image::DynamicImage::new_rgb8(80, 40)
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+        let blocks = parser::parse(
+            "Table: 数据表\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n![结构图](figure.png)\n",
+        );
+        let mut emitter = OfficialEmitter::with_image_base(dir.path().to_path_buf());
+        let docx = emitter.emit_all(Docx::new(), &blocks);
+        let texts: Vec<String> = paragraphs(&docx).into_iter().map(paragraph_text).collect();
+
+        assert!(texts.iter().any(|text| text == "表 1 数据表"));
+        assert!(texts.iter().any(|text| text == "图 1 结构图"));
+        assert!(docx.document.children.iter().any(|child| match child {
+            DocumentChild::Paragraph(paragraph) => paragraph.children.iter().any(|child| {
+                matches!(child, ParagraphChild::Run(run) if run.children.iter().any(|child| matches!(child, RunChild::Drawing(_))))
+            }),
+            _ => false,
+        }));
+    }
 }
