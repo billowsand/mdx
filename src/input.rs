@@ -34,11 +34,23 @@ pub enum InputKind {
 /// 把输入路径合并成单一字符串（目录则按文件名升序拼接所有 .md）
 pub fn collect_raw(input: &Path) -> Result<String> {
     match classify(input)? {
-        InputKind::File => {
-            fs::read_to_string(input).with_context(|| format!("读取文件 {} 失败", input.display()))
-        }
+        InputKind::File => read_markdown(input),
         InputKind::Directory => merge_dir(input),
     }
+}
+
+/// 读取单个 Markdown 文件，并移除 UTF-8 BOM。
+///
+/// 目录输入会把多个文件串接起来；若只在合并后的整段文本开头去 BOM，第二个及
+/// 后续文件的 BOM 会残留在首行，导致 `## 标题` 实际变成 `\u{feff}## 标题`，
+/// 从而被解析器误判为普通段落。因此必须在合并前逐文件处理。
+fn read_markdown(path: &Path) -> Result<String> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("读取文件 {} 失败", path.display()))?;
+    Ok(content
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&content)
+        .to_owned())
 }
 
 /// 删除整行只剩 `---` / `----` …… 的水平分隔线。
@@ -90,8 +102,7 @@ fn merge_dir(dir: &Path) -> Result<String> {
 
     let mut merged = String::new();
     for path in &md_files {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("读取文件 {} 失败", path.display()))?;
+        let content = read_markdown(path)?;
         merged.push_str(&content);
         merged.push_str("\n\n");
     }
@@ -162,6 +173,28 @@ mod tests {
         let raw = collect_raw(&md).unwrap();
 
         assert!(raw.starts_with("---\nbibliography: refs.bib\n---"));
+    }
+
+    #[test]
+    fn collect_raw_strips_bom_from_every_directory_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("01.md"), "\u{feff}## 第一章 标题\n").unwrap();
+        fs::write(dir.path().join("02.md"), "\u{feff}## 第二章 标题\n").unwrap();
+
+        let raw = collect_raw(dir.path()).unwrap();
+        let headings: Vec<(u8, String)> = crate::parser::parse(&raw)
+            .into_iter()
+            .filter_map(|block| match block {
+                crate::common::ast::Block::Heading { level, text } => Some((level, text)),
+                _ => None,
+            })
+            .collect();
+
+        assert!(!raw.contains('\u{feff}'));
+        assert_eq!(
+            headings,
+            vec![(2, "标题".to_string()), (2, "标题".to_string())]
+        );
     }
 
     #[test]

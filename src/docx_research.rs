@@ -1024,25 +1024,22 @@ where
     docx.add_paragraph(build(p))
 }
 
-/// 列表段落：第一级编号缩进两个汉字，后续层级再逐级缩进两个汉字。
+/// 列表段落：左侧缩进为 0，特殊格式为首行缩进两个汉字。
 fn add_list_paragraph(
     docx: Docx,
-    level: u8,
+    _level: u8,
     prefix: &str,
     content: &[Inline],
     image_base_dir: &Path,
 ) -> Docx {
-    // 正文为 14pt，一个汉字约 280 twips。编号起点先空两个汉字；每深入一级
-    // 再增加两个汉字。正文使用两汉字宽的悬挂标签位，使换行与首行正文对齐。
-    const BASE_INDENT: i32 = 560;
-    const LEVEL_STEP: i32 = 560;
-    const LABEL_WIDTH: i32 = 560;
-    let left = BASE_INDENT + LABEL_WIDTH + i32::from(level.saturating_sub(1)) * LEVEL_STEP;
+    // 正文为 14pt，一个汉字约 280 twips。列表左侧缩进固定为 0，特殊格式使用
+    // 560 twips 的首行缩进，即两个正文汉字。
+    const FIRST_LINE_INDENT: i32 = 560;
     let p = Paragraph::new()
         .align(AlignmentType::Both)
         .indent(
-            Some(left),
-            Some(SpecialIndentType::Hanging(LABEL_WIDTH)),
+            Some(0),
+            Some(SpecialIndentType::FirstLine(FIRST_LINE_INDENT)),
             None,
             None,
         )
@@ -1404,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn research_lists_use_expected_prefixes_and_hanging_indent() {
+    fn research_lists_use_two_character_first_line_indent() {
         let mut state = ListState::default();
         assert_eq!(state.next_prefix(1), "⑴ ");
         assert_eq!(state.next_prefix(2), "① ");
@@ -1423,17 +1420,17 @@ mod tests {
                 Path::new("."),
             );
         }
-        for (index, child) in docx.document.children.iter().enumerate() {
+        for child in &docx.document.children {
             let paragraph = match child {
                 DocumentChild::Paragraph(paragraph) => paragraph,
                 other => panic!("expected paragraph, got {other:?}"),
             };
             let indent = paragraph.property.indent.as_ref().expect("list indent");
-            assert_eq!(indent.start, Some(1120 + index as i32 * 560));
-            assert!(matches!(
+            assert_eq!(indent.start, Some(0));
+            assert_eq!(
                 indent.special_indent,
-                Some(SpecialIndentType::Hanging(560))
-            ));
+                Some(SpecialIndentType::FirstLine(560))
+            );
         }
         let first = match &docx.document.children[0] {
             DocumentChild::Paragraph(paragraph) => paragraph,
