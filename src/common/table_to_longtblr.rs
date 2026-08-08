@@ -3,265 +3,27 @@
 //! 智能表格处理：自动分析内容决定对齐方式和列宽分配。
 
 use crate::common::ast::{Block, Inline};
-
-/// 配置参数
-const SHORT_TEXT_THRESHOLD: f64 = 8.0;
-const LONG_TEXT_THRESHOLD: f64 = 20.0;
-const NUMERIC_RATIO_THRESHOLD: f64 = 0.8;
-const MIN_WIDTH_RATIO: f64 = 0.8;
-const MAX_WIDTH_RATIO: f64 = 4.0;
-const CJK_WIDTH_FACTOR: f64 = 1.8;
-/// 窄数字列：表头以外全是不超过这么多位的纯数字（如序号列 1/2/…/99）
-const NARROW_NUMERIC_MAX_DIGITS: usize = 2;
-/// 窄数字列的固定列宽，不参与 X 列的按比例伸缩
-const NARROW_NUMERIC_WIDTH: &str = "2em";
-
-/// 计算字符串的显示宽度（考虑中文字符）
-fn calc_display_width(s: &str) -> f64 {
-    let mut width = 0.0;
-    for c in s.chars() {
-        if c.is_ascii() {
-            width += 1.0;
-        } else {
-            width += CJK_WIDTH_FACTOR;
-        }
-    }
-    width
-}
-
-/// 检测是否为数字内容（包括带单位的数字）
-fn is_numeric_content(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-
-    // 清理空白和 LaTeX 命令
-    let cleaned = s.replace(|c: char| c.is_whitespace(), "").replace("\\", "");
-
-    let patterns: Vec<&str> = vec![
-        r"^-?\d+\.?\d*$",            // 纯数字：123, 12.34, -5
-        r"^-?\d+\.?\d*%$",           // 百分比：12.5%
-        r"^-?\d+\.?\d*[万亿千百]+$", // 带中文单位：100万
-        r"^\d+[/-]\d+[/-]?\d*$",     // 日期：2024/01/01, 2024-01
-        r"^\d+:\d+:?\d*$",           // 时间：12:30, 12:30:00
-        r"^[\d,]+.?\d*$",            // 带千分位：1,234,567
-    ];
-
-    for pattern in patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            if re.is_match(&cleaned) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// 检测是否包含句子标点（表示描述性文本）
-fn has_sentence_punctuation(s: &str) -> bool {
-    let short_text_punctuations = ['，', '、', ','];
-    let long_text_punctuations = ['。', '；', '：', '.', ';'];
-
-    let width = calc_display_width(s);
-    let mut has_long_punct = false;
-    let mut has_short_punct = false;
-
-    for c in s.chars() {
-        if long_text_punctuations.contains(&c) {
-            has_long_punct = true;
-        }
-        if short_text_punctuations.contains(&c) {
-            has_short_punct = true;
-        }
-    }
-
-    if has_long_punct {
-        return true;
-    }
-    // 短文本中的逗号/顿号不算描述性标点
-    if has_short_punct && width > SHORT_TEXT_THRESHOLD {
-        return true;
-    }
-
-    false
-}
-
-/// 是否为"不超过 NARROW_NUMERIC_MAX_DIGITS 位的纯数字"，如 `1`、`42`
-fn is_short_digits(s: &str) -> bool {
-    let t = s.trim();
-    !t.is_empty()
-        && t.chars().count() <= NARROW_NUMERIC_MAX_DIGITS
-        && t.chars().all(|c| c.is_ascii_digit())
-}
-
-#[derive(Debug, Clone)]
-struct ColumnStats {
-    total_width: f64,
-    max_width: f64,
-    count: usize,
-    numeric_count: usize,
-    has_long_text: bool,
-    has_punctuation: bool,
-    avg_width: f64,
-    is_numeric: bool,
-    /// 表头以外全是 2 位以内纯数字（序号列一类）：走固定列宽
-    is_narrow_numeric: bool,
-}
-
-impl ColumnStats {
-    fn new() -> Self {
-        Self {
-            total_width: 0.0,
-            max_width: 0.0,
-            count: 0,
-            numeric_count: 0,
-            has_long_text: false,
-            has_punctuation: false,
-            avg_width: 0.0,
-            is_numeric: false,
-            is_narrow_numeric: false,
-        }
-    }
-}
-
-/// 分析列内容特征
-fn analyze_column(cells: &[String]) -> ColumnStats {
-    let mut stats = ColumnStats::new();
-    // 传入的 cells 不含表头，因此这里天然只看表体
-    let mut all_short_digits = true;
-
-    for cell_text in cells {
-        if cell_text.is_empty() {
-            continue;
-        }
-
-        if !is_short_digits(cell_text) {
-            all_short_digits = false;
-        }
-
-        let width = calc_display_width(cell_text);
-
-        stats.total_width += width;
-        stats.count += 1;
-
-        if width > stats.max_width {
-            stats.max_width = width;
-        }
-
-        if is_numeric_content(cell_text) {
-            stats.numeric_count += 1;
-        }
-
-        if width > LONG_TEXT_THRESHOLD {
-            stats.has_long_text = true;
-        }
-
-        if has_sentence_punctuation(cell_text) {
-            stats.has_punctuation = true;
-        }
-    }
-
-    // 计算平均宽度
-    stats.avg_width = if stats.count > 0 {
-        stats.total_width / stats.count as f64
-    } else {
-        0.0
-    };
-
-    // 判断是否为数字列
-    stats.is_numeric = stats.count > 0
-        && (stats.numeric_count as f64 / stats.count as f64) >= NUMERIC_RATIO_THRESHOLD;
-
-    // 窄数字列：表体全是 2 位以内纯数字（空单元格不计）
-    stats.is_narrow_numeric = stats.count > 0 && all_short_digits;
-
-    stats
-}
-
-/// 根据列统计决定对齐方式
-fn determine_alignment(stats: &ColumnStats) -> char {
-    // 数字列：居中
-    if stats.is_numeric {
-        return 'c';
-    }
-
-    // 有句子标点或长文本：靠左
-    if stats.has_punctuation || stats.has_long_text {
-        return 'l';
-    }
-
-    // 短文本或中等文本：居中
-    if stats.avg_width <= SHORT_TEXT_THRESHOLD || stats.avg_width <= LONG_TEXT_THRESHOLD {
-        return 'c';
-    }
-
-    // 默认靠左
-    'l'
-}
-
-/// 计算列宽比例
-fn calculate_width_ratios(columns_stats: &[ColumnStats]) -> Vec<f64> {
-    let num_cols = columns_stats.len();
-    if num_cols == 0 {
-        return vec![];
-    }
-
-    // 计算每列的权重
-    let mut weights: Vec<f64> = Vec::new();
-    let mut total_weight = 0.0;
-
-    for stats in columns_stats {
-        // 权重 = max(最大宽度, 平均宽度 * 1.2)
-        let weight = stats.max_width.max(stats.avg_width * 1.2).max(2.0);
-        weights.push(weight);
-        total_weight += weight;
-    }
-
-    // 归一化并应用约束
-    let mut ratios: Vec<f64> = Vec::new();
-
-    for weight in &weights {
-        let mut ratio = (weight / total_weight) * num_cols as f64;
-
-        // 应用最小/最大约束
-        ratio = ratio.clamp(MIN_WIDTH_RATIO, MAX_WIDTH_RATIO);
-
-        // 四舍五入到一位小数
-        ratio = (ratio * 10.0 + 0.5).floor() / 10.0;
-
-        ratios.push(ratio);
-    }
-
-    ratios
-}
+use crate::common::table_layout::{analyze_table, ColumnLayout, ColumnWidth};
 
 /// 生成智能列规格
-fn generate_smart_colspec(columns_stats: &[ColumnStats]) -> String {
-    let ratios = calculate_width_ratios(columns_stats);
-    let mut specs: Vec<String> = Vec::new();
-
-    for (i, stats) in columns_stats.iter().enumerate() {
-        let align = determine_alignment(stats);
-        let ratio = ratios[i];
-
-        // 窄数字列（序号列一类）：固定 2em，不参与 X 列的按比例伸缩，
-        // 余下的列仍按原比例算法分配剩余宽度
-        if stats.is_narrow_numeric {
-            specs.push(format!("Q[{},wd={}]", align, NARROW_NUMERIC_WIDTH));
-            continue;
-        }
-
-        // 生成 X[ratio, align] 格式
-        let spec = if ratio == 1.0 {
-            format!("X[{}]", align)
-        } else {
-            format!("X[{:.1},{}]", ratio, align)
-        };
-        specs.push(spec);
-    }
-
-    specs.join(" ")
+fn generate_smart_colspec(columns: &[ColumnLayout]) -> String {
+    columns
+        .iter()
+        .map(|column| {
+            let align = column.alignment.latex();
+            match column.width {
+                ColumnWidth::FixedEm(em) => format!("Q[{},wd={}em]", align, em),
+                ColumnWidth::Relative(ratio) => {
+                    if ratio == 1.0 {
+                        format!("X[{}]", align)
+                    } else {
+                        format!("X[{:.1},{}]", ratio, align)
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// 转义 LaTeX 特殊字符（不处理行内格式标记）。
@@ -363,44 +125,33 @@ pub fn emit_longtblr(rows: &[Vec<String>], caption: Option<&str>, label: Option<
         return String::new();
     }
 
-    let num_cols = rows[0].len();
-    if num_cols == 0 {
+    let columns = analyze_table(rows);
+    if columns.is_empty() {
         return String::new();
     }
 
-    // 收集各列内容（不包括表头）
-    let mut columns: Vec<Vec<String>> = vec![Vec::new(); num_cols];
-    for row in rows.iter().skip(1) {
-        for (col_idx, cell) in row.iter().enumerate() {
-            if col_idx < num_cols {
-                columns[col_idx].push(cell.clone());
-            }
-        }
-    }
-
-    // 分析各列特征
-    let columns_stats: Vec<ColumnStats> = columns.iter().map(|col| analyze_column(col)).collect();
-
     // 生成智能列规格
-    let colspec = generate_smart_colspec(&columns_stats);
+    let colspec = generate_smart_colspec(&columns);
 
     // 生成调试信息
     let mut debug_info = String::from("% 智能表格分析结果:\n");
-    for (i, stats) in columns_stats.iter().enumerate() {
-        let align = determine_alignment(stats);
-        let align_str = if align == 'c' { "居中" } else { "靠左" };
+    for (i, column) in columns.iter().enumerate() {
+        let align_str = if column.alignment.latex() == 'c' {
+            "居中"
+        } else {
+            "靠左"
+        };
         debug_info.push_str(&format!(
             "%% 列{}: 平均宽度={:.1}, 最大宽度={:.1}, 数字列={}, 有标点={} → 对齐={}{}\n",
             i + 1,
-            stats.avg_width,
-            stats.max_width,
-            if stats.is_numeric { "是" } else { "否" },
-            if stats.has_punctuation { "是" } else { "否" },
+            column.avg_display_width,
+            column.max_display_width,
+            if column.is_numeric { "是" } else { "否" },
+            if column.has_punctuation { "是" } else { "否" },
             align_str,
-            if stats.is_narrow_numeric {
-                format!(", 窄数字列 → 固定列宽={}", NARROW_NUMERIC_WIDTH)
-            } else {
-                String::new()
+            match column.width {
+                ColumnWidth::FixedEm(em) => format!(", 窄数字列 → 固定列宽={}em", em),
+                ColumnWidth::Relative(_) => String::new(),
             }
         ));
     }
@@ -458,32 +209,6 @@ pub fn table_block_to_longtblr(block: &Block, caption: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_display_width() {
-        assert_eq!(calc_display_width("hello"), 5.0);
-        assert_eq!(calc_display_width("你好"), 3.6); // 2 * 1.8
-        assert_eq!(calc_display_width("hello你好"), 8.6); // 5 + 3.6
-    }
-
-    #[test]
-    fn test_numeric_detection() {
-        assert!(is_numeric_content("123"));
-        assert!(is_numeric_content("12.34"));
-        assert!(is_numeric_content("-5"));
-        assert!(is_numeric_content("12.5%"));
-        assert!(is_numeric_content("100万"));
-        assert!(is_numeric_content("2024/01/01"));
-        assert!(!is_numeric_content("你好"));
-        assert!(!is_numeric_content("Hello world"));
-    }
-
-    #[test]
-    fn test_column_analysis() {
-        let cells = vec!["123".to_string(), "456".to_string(), "789".to_string()];
-        let stats = analyze_column(&cells);
-        assert!(stats.is_numeric);
-    }
 
     #[test]
     fn narrow_numeric_column_uses_fixed_width() {
