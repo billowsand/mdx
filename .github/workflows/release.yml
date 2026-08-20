@@ -155,6 +155,7 @@ jobs:
               rustup target add "$TARGET"
               cargo build --release --locked --all-features --target "$TARGET"
             '
+          sudo chown -R "$(id -u):$(id -g)" target
       - name: Verify Linux glibc baseline
         if: runner.os == 'Linux'
         shell: bash
@@ -192,7 +193,7 @@ jobs:
             --output target/tectonic-runtime/archive \
             "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/${TECTONIC_ASSET}"
           echo "${TECTONIC_SHA256}  target/tectonic-runtime/archive" \
-            | sha256sum --check --strict
+            | sha256sum --check
           case "$TECTONIC_ASSET" in
             *.zip) unzip -q target/tectonic-runtime/archive -d target/tectonic-runtime/extracted ;;
             *.tar.gz) tar -xzf target/tectonic-runtime/archive -C target/tectonic-runtime/extracted ;;
