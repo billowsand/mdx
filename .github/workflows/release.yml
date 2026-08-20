@@ -64,8 +64,9 @@ jobs:
           curl --fail --location --silent --show-error \
             --output tectonic.tar.gz \
             "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/${asset}"
-          echo "8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7  tectonic.tar.gz" \
-            | sha256sum -c
+          python scripts/verify-sha256.py \
+            8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7 \
+            tectonic.tar.gz
           mkdir tectonic-bin
           tar -xzf tectonic.tar.gz -C tectonic-bin
       - name: Resolve and verify curated bundle
@@ -192,8 +193,9 @@ jobs:
           curl --fail --location --silent --show-error \
             --output target/tectonic-runtime/archive \
             "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/${TECTONIC_ASSET}"
-          echo "${TECTONIC_SHA256}  target/tectonic-runtime/archive" \
-            | sha256sum -c
+          python scripts/verify-sha256.py \
+            "$TECTONIC_SHA256" \
+            target/tectonic-runtime/archive
           case "$TECTONIC_ASSET" in
             *.zip) unzip -q target/tectonic-runtime/archive -d target/tectonic-runtime/extracted ;;
             *.tar.gz) tar -xzf target/tectonic-runtime/archive -C target/tectonic-runtime/extracted ;;
