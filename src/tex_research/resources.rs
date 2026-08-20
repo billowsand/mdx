@@ -11,3 +11,18 @@ pub fn extract(output_dir: &Path) -> Result<()> {
     fs::write(output_dir.join("md2tex.cls"), MD2TEX_CLS).with_context(|| "释放 md2tex.cls 失败")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn research_class_uses_separate_latin_and_cjk_code_fonts() {
+        assert!(MD2TEX_CLS.contains("\\newcommand{\\codefont}{JetBrains Mono}"));
+        assert!(MD2TEX_CLS.contains("\\newcommand{\\codeCJKfont}{FZKai-Z03}"));
+        assert!(MD2TEX_CLS.contains("\\newcommand{\\maintitle}{FZXiaoBiaoSong-B05S}"));
+        assert!(MD2TEX_CLS.contains("\\setmonofont{\\codefont}"));
+        assert!(MD2TEX_CLS.contains("\\setCJKfamilyfont{code}{\\codeCJKfont}"));
+        assert!(!MD2TEX_CLS.contains("LXGW Bright Code"));
+    }
+}

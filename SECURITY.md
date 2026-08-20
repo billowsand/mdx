@@ -19,4 +19,7 @@
 
 ## 使用者注意事项
 
-mdx 会读取本地 Markdown、BibTeX 和图片，并可能调用系统中的 `xelatex`、`biber` 或 `tectonic`。请只转换可信来源的输入，并在处理敏感文档时检查输出目录及 TeX 工具链的安全策略。
+mdx 会读取本地 Markdown、BibTeX 和图片，并可能调用发布包内置的 `tectonic`，或
+系统中的 `xelatex`、`bibtex`、`tectonic`。内置运行时使用只读离线 bundle，并以
+`--only-cached --untrusted` 运行，但 TeX 输入仍应视为可执行排版内容。请只转换可信
+来源的输入，并在处理敏感文档时检查输出目录及 TeX 工具链的安全策略。

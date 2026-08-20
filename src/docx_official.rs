@@ -23,6 +23,7 @@ use crate::common::ast::{Block, Inline, MarkerKind};
 use crate::common::front_matter;
 use crate::common::inline;
 use crate::common::numbering::{int_to_roman, number_to_chinese, number_to_uppercase_letter};
+use crate::common::table_layout::{analyze_table, to_docx_grid};
 use crate::parser;
 
 // ===== 圆圈数字（列表前缀用） =====
@@ -53,6 +54,7 @@ const LINE_BODY: i32 = 580; // 29pt 固定行距
 const INDENT_FIRST_LINE: i32 = 640; // 首行缩进 2 字符 (2 × 16pt × 20twips)
 const MAX_IMAGE_WIDTH_EMU: u32 = 5_600_000;
 const MAX_INLINE_IMAGE_WIDTH_EMU: u32 = 1_800_000;
+const TABLE_CONTENT_WIDTH_TWIPS: usize = 8_844; // 156 mm
 
 fn font_set(name: &str) -> RunFonts {
     RunFonts::new().ascii(name).hi_ansi(name).east_asia(name)
@@ -423,15 +425,17 @@ impl OfficialEmitter {
         if rows.is_empty() {
             return docx;
         }
-        let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let column_layout = analyze_table(rows);
+        let max_cols = column_layout.len();
         if max_cols == 0 {
             return docx;
         }
+        let grid = to_docx_grid(&column_layout, TABLE_CONTENT_WIDTH_TWIPS, SIZE_TABLE * 10);
 
         let mut table_rows = Vec::new();
         for (row_idx, row_data) in rows.iter().enumerate() {
             let mut cells = Vec::new();
-            for col_idx in 0..max_cols {
+            for (col_idx, &column_width) in grid.iter().enumerate() {
                 let cell_data = row_data.get(col_idx).map(|s| s.as_str()).unwrap_or("");
                 let align = if row_idx == 0 {
                     AlignmentType::Center
@@ -443,20 +447,29 @@ impl OfficialEmitter {
                 let font = if row_idx == 0 { FONT_HEAD } else { FONT_BODY };
                 let p = Paragraph::new().align(align);
                 let p = add_inlines(p, &inline::parse(cell_data), font, SIZE_TABLE, false, None);
-                cells.push(TableCell::new().add_paragraph(p));
+                cells.push(
+                    TableCell::new()
+                        .width(column_width, WidthType::Dxa)
+                        .add_paragraph(p),
+                );
             }
             table_rows.push(TableRow::new(cells));
         }
 
-        let table = Table::new(table_rows).set_borders(
-            TableBorders::new()
-                .set(TableBorder::new(TableBorderPosition::Top).size(4))
-                .set(TableBorder::new(TableBorderPosition::Left).size(4))
-                .set(TableBorder::new(TableBorderPosition::Bottom).size(4))
-                .set(TableBorder::new(TableBorderPosition::Right).size(4))
-                .set(TableBorder::new(TableBorderPosition::InsideH).size(4))
-                .set(TableBorder::new(TableBorderPosition::InsideV).size(4)),
-        );
+        let table_width = grid.iter().sum();
+        let table = Table::new(table_rows)
+            .set_grid(grid)
+            .width(table_width, WidthType::Dxa)
+            .layout(TableLayoutType::Fixed)
+            .set_borders(
+                TableBorders::new()
+                    .set(TableBorder::new(TableBorderPosition::Top).size(4))
+                    .set(TableBorder::new(TableBorderPosition::Left).size(4))
+                    .set(TableBorder::new(TableBorderPosition::Bottom).size(4))
+                    .set(TableBorder::new(TableBorderPosition::Right).size(4))
+                    .set(TableBorder::new(TableBorderPosition::InsideH).size(4))
+                    .set(TableBorder::new(TableBorderPosition::InsideV).size(4)),
+            );
 
         docx.add_table(table)
     }
@@ -773,6 +786,24 @@ mod tests {
             .filter(|text| !text.is_empty())
             .collect();
         assert_eq!(captions, vec!["表 1 产品清单"]);
+    }
+
+    #[test]
+    fn table_uses_shared_research_tex_column_widths() {
+        let rows = vec![
+            vec!["序号".into(), "名称".into(), "详细说明".into()],
+            vec!["1".into(), "短项".into(), "这是一段很长的说明文字。".into()],
+            vec!["2".into(), "另一项".into(), "另一段较长的说明文字。".into()],
+        ];
+        let docx = OfficialEmitter::new().add_table(Docx::new(), &rows);
+        let table = match docx.document.children.last() {
+            Some(DocumentChild::Table(table)) => table,
+            other => panic!("expected table, got {other:?}"),
+        };
+
+        assert_eq!(table.grid[0], 560); // 2em at the 14pt table font size
+        assert_eq!(table.grid.iter().sum::<usize>(), TABLE_CONTENT_WIDTH_TWIPS);
+        assert!(table.grid[2] > table.grid[1]);
     }
 
     #[test]

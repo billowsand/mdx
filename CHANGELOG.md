@@ -6,6 +6,45 @@
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-08-20
+
+### 新增
+
+- 五个平台的公共发布包现在内置官方 Tectonic 0.17.0 可执行文件，以及由固定预热
+  文档生成并再次离线验证的裁剪 bundle。内置公文、研究报告模板不再要求目标机器
+  安装 TeX Live，也不会在编译时访问网络。
+- 支持用 `MDX_TECTONIC_PATH` 与 `MDX_TECTONIC_BUNDLE` 成对覆盖内置运行时，便于
+  源码安装和自定义部署复用同一离线编译路径。
+
+### 变更
+
+- PDF 引擎发现顺序改为“发布包内置 Tectonic → 系统 XeLaTeX → 系统 Tectonic”。
+- 两套内置 TeX 模板的文献处理从 BibLaTeX/Biber 改为 Tectonic 内置 BibTeX 与
+  `gbt7714-numerical`，系统 XeLaTeX 回退路径也只要求 `bibtex`。
+- 发布流水线固定校验各平台 Tectonic 资产的 SHA-256，并随包附带 Tectonic 许可
+  与裁剪 bundle 来源说明；`font/` 中的文档字体仍不进入公共发布包。
+- Linux AMD64 与 ARM64 发布包在 manylinux_2_28 环境构建，并检查最终 ELF 的
+  `GLIBC_*` 符号，保证最低 glibc 要求不高于 2.28。
+
+## [2.14.0] - 2026-08-20
+
+### 变更
+
+- TeX 代码字体改为西文 `JetBrains Mono`、中文 `FZKai-Z03`，不再使用
+  `LXGW Bright Code`。研究报告会在排版前明确检查全部必需字体；公文样式在
+  字体缺失时继续使用系统回退字体。
+- 研究报告兼容方正小标宋字体家族名的 `FZXiaoBiaoSong-B05` 与
+  `FZXiaoBiaoSong-B05S` 两种实际变体。
+- 公共发布包不自动携带授权状态不明确的方正字体；用户可将 `font/` 中的字体
+  安装到操作系统后使用。
+
+## [2.13.0] - 2026-08-02
+
+### 变更
+
+- 四种输出组合现在统一使用原 TeX research 的表格列宽算法。两种 DOCX 输出也会按
+  内容最大宽度、平均宽度和窄数字列规则生成固定表格网格，不再依赖 Word 各自自动调整。
+
 ## [2.12.3] - 2026-08-02
 
 ### 修复

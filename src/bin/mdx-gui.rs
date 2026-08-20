@@ -358,7 +358,7 @@ impl eframe::App for MdxApp {
                             ui.label("PDF");
                             ui.checkbox(
                                 &mut self.compile_pdf,
-                                "检测到 XeLaTeX 或 Tectonic 时同时编译 PDF",
+                                "使用内置 Tectonic 或系统 TeX 引擎同时编译 PDF",
                             );
                             ui.end_row();
                         }

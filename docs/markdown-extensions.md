@@ -139,7 +139,7 @@ bibliography: refs/library.bib
 - 支持段落、列表项和表格单元格；标题、行内代码和 fenced code block 不解析 citation。
 - 只支持一个 Bib 文件和上述两种方括号形式；不支持裸 `@key`、`[-@key]`、页码、
   前后缀或多个 Bib 文件。
-- research 与 official tex 都使用 `biblatex` 的 `gb7714-2015` 样式；Docx 不生成
+- research 与 official tex 都使用 BibTeX 的 `gbt7714-numerical` 样式；Docx 不生成
   Word 原生 citation，保留 `[@key]` 原标记。
 - 转换前会严格检查 Bib 文件。以下情况为硬错误并停止转换：
   - 正文有 citation，但 front matter 未声明 `bibliography`；

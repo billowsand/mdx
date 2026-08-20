@@ -106,8 +106,9 @@ fn wrap_document(body: &str, has_citations: bool) -> String {
     let mut s = String::new();
     s.push_str("\\documentclass{official}\n");
     if has_citations {
-        s.push_str("\\usepackage[style=gb7714-2015]{biblatex}\n");
-        s.push_str("\\addbibresource{references.bib}\n");
+        s.push_str("\\usepackage{gbt7714}\n");
+        s.push_str("\\citestyle{numbers}\n");
+        s.push_str("\\renewcommand{\\refname}{参考文献}\n");
     }
     s.push('\n');
     s.push_str("\\begin{document}\n\n");
@@ -116,7 +117,7 @@ fn wrap_document(body: &str, has_citations: bool) -> String {
         s.push('\n');
     }
     if has_citations {
-        s.push_str("\n\\printbibliography\n");
+        s.push_str("\n\\bibliography{references}\n");
     }
     s.push_str("\n\\end{document}\n");
     s
@@ -975,14 +976,20 @@ mod tests {
     #[test]
     fn wrapper_adds_bibliography_only_for_citations() {
         let cited = wrap_document("正文\\cite{a}\n", true);
-        assert!(cited.contains("\\usepackage[style=gb7714-2015]{biblatex}"));
-        assert!(cited.contains("\\addbibresource{references.bib}"));
-        assert!(cited.contains("\\printbibliography"));
+        assert!(cited.contains("\\usepackage{gbt7714}"));
+        assert!(cited.contains("\\citestyle{numbers}"));
+        assert!(cited.contains("\\bibliography{references}"));
         assert!(!cited.contains("\\nocite"));
 
         let plain = wrap_document("正文\n", false);
-        assert!(!plain.contains("biblatex"));
-        assert!(!plain.contains("printbibliography"));
+        assert!(!plain.contains("gbt7714"));
+        assert!(!plain.contains("bibliography{references}"));
+    }
+
+    #[test]
+    fn official_class_prefers_jetbrains_mono_and_fzkai_for_code() {
+        assert!(OFFICIAL_CLS.contains("\\setmonofont{JetBrains Mono}"));
+        assert!(OFFICIAL_CLS.contains("\\setCJKmonofont{FZKai-Z03}"));
     }
 
     #[test]

@@ -41,9 +41,12 @@
 从 [GitHub Releases](https://github.com/billowsand/mdx/releases/latest) 下载与你的平台对应的压缩包。压缩包包含：
 
 - `mdx-gui`（Windows 为 `mdx-gui.exe`）：双击运行桌面界面；
-- `mdx`（Windows 为 `mdx.exe`）：命令行程序，可将其目录加入 `PATH`。
+- `mdx`（Windows 为 `mdx.exe`）：命令行程序，可将其目录加入 `PATH`；
+- `runtime/`：与当前平台匹配的 Tectonic 0.17.0、裁剪离线 bundle 和许可说明。
 
-发布工作流提供 Windows x86_64、Linux x86_64/ARM64、macOS Intel/Apple Silicon 构建及 `SHA256SUMS.txt`。
+发布工作流提供 Windows x86_64、Linux x86_64/ARM64（glibc 2.28+）、macOS
+Intel/Apple Silicon 构建及 `SHA256SUMS.txt`。内置模板生成 PDF 不要求目标机器
+安装 TeX Live，也不在编译时下载宏包；文档字体仍由用户单独安装到操作系统。
 
 #### 从源码安装
 
@@ -67,13 +70,15 @@ cargo build --release --locked --all-features
 ```
 
 二进制位于 `target/release/`。GUI 使用内嵌的 `font/sfss.ttf` 显示中文。
+`font/` 中的文档字体不会由 mdx 自动安装；从源码使用时请先按下文说明安装。
 
 ### 第一次转换
 
 #### 桌面界面
 
 运行 `mdx-gui`，选择或拖入 `.md` 文件/目录，然后选择输出格式和文档样式并点击
-“开始转换”。TeX 模式可选择是否调用系统中的 XeLaTeX/Tectonic 同时生成 PDF；
+“开始转换”。TeX 模式可选择是否用发布包内置 Tectonic（或源码安装时的系统
+XeLaTeX/Tectonic）同时生成 PDF；
 研究报告 TeX 还可指定自定义模板。转换在后台执行，完成后可直接打开输出位置。
 
 从源码直接启动界面：
@@ -155,18 +160,38 @@ mdx tex  <input> --style <official|research> [-o <output.tex>] [--template <temp
 
 生成 `.tex` 本身不需要外部转换工具。完成 TeX 输出后，mdx 会按以下顺序尝试生成 PDF：
 
-1. 优先检测 `xelatex`；
-2. 不可用时回退到 `tectonic`；
-3. 两者都不存在时保留 `.tex`，转换仍成功。
+1. GitHub Release 压缩包优先使用相邻 `runtime/` 中的 Tectonic 和离线 bundle；
+2. 从源码安装、没有内置运行时时，依次检测系统 `xelatex`、系统 `tectonic`；
+3. 所有引擎都不存在时保留 `.tex`，转换仍成功。
 
-有 BibTeX 引用且使用 XeLaTeX 时，系统还应提供 `biber`。TeX 样式依赖常见中文字体；若指定字体不存在，内置类会尝试 fallback 字体。
+内置 Tectonic 自带 BibTeX 引擎；有文献引用且回退到系统 XeLaTeX 时，系统还应
+提供 `bibtex`。公共发布包不随程序分发 `font/` 中的方正字体或 JetBrains Mono；
+TeX/PDF 输出前请在操作系统中安装相应字体。研究报告为保证版式一致，不会用开源
+字体静默替代缺失的方正字体；公文样式仍保留系统字体回退。
+
+| 用途 | 字体内部名称 | `font/` 中的文件 |
+|---|---|---|
+| 正文 | `FZShuSong-Z01` | `FZSSK.TTF` |
+| 标题 | `FZXiaoBiaoSong-B05` / `FZXiaoBiaoSong-B05S` | `fzxbs.ttf` |
+| 黑体 | `FZHei-B01` | `FZHTK.TTF` |
+| 楷体及中文代码 | `FZKai-Z03` | `FZKai-Z03 Regular.ttf` |
+| 西文代码 | `JetBrains Mono` | `JetBrainsMono-2.304.zip` 中的 `fonts/ttf/JetBrainsMono-Regular.ttf` |
+
+Windows 可解压 JetBrains Mono 后，选中上述 TTF 文件并使用右键菜单“为所有用户
+安装”；macOS 可用“字体册”安装，Linux 可安装到用户字体目录后刷新 fontconfig。
+方正字体能否随应用再分发取决于持有的具体授权，发布前应以授权合同为准。
+
+裁剪 bundle 只保证 mdx 两套内置模板所需的资源，不是完整 TeX Live。自定义研究
+报告模板若引入其他宏包，应自行提供系统 TeX 环境，或用成对的
+`MDX_TECTONIC_PATH`、`MDX_TECTONIC_BUNDLE` 指向自行维护的 Tectonic 与本地
+bundle。只设置其中一个变量会被视为配置错误。
 
 | 输出 | 转换阶段依赖 | 可选 PDF 依赖 |
 |---|---|---|
 | `docx official` | 无 | — |
 | `docx research` | 无 | — |
-| `tex official` | 无 | XeLaTeX 或 Tectonic；文献引用建议 Biber |
-| `tex research` | 无 | XeLaTeX 或 Tectonic；文献引用建议 Biber |
+| `tex official` | 无 | Release 已内置离线 Tectonic；源码安装可用 XeLaTeX/Tectonic |
+| `tex research` | 无 | Release 已内置离线 Tectonic；源码安装可用 XeLaTeX/Tectonic |
 
 ## Markdown 支持范围
 
