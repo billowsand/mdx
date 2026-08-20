@@ -91,7 +91,7 @@ impl Merger {
             &cover,
             citations.has_citations,
         );
-        let tex = configure_biblatex(&tex, citations.has_citations);
+        let tex = configure_bibliography(&tex, citations.has_citations);
 
         // 5. 写入输出文件（主文件 + data/ 与 appendix/ 分章部件）
         fs::write(output_tex, &tex)
@@ -323,7 +323,7 @@ fn escape_latex(s: &str) -> String {
     out
 }
 
-fn configure_biblatex(content: &str, enabled: bool) -> String {
+fn configure_bibliography(content: &str, enabled: bool) -> String {
     let mut result = content.to_string();
     let nocite = regex::Regex::new(r"\\nocite\{\*\}").expect("invalid nocite cleanup pattern");
     result = nocite.replace_all(&result, "").to_string();
@@ -337,8 +337,11 @@ fn configure_biblatex(content: &str, enabled: bool) -> String {
         r"\\addbibresource\{[^}]*\}\s*%?.*\n?",
         r"\\renewcommand\{\\bibname\}\{[^}]*\}\s*\n?",
         r"\\printbibliography\s*\n?",
+        r"\\usepackage\{gbt7714\}\s*\n?",
+        r"\\citestyle\{numbers\}\s*\n?",
+        r"\\bibliography\{references\}\s*\n?",
     ] {
-        let re = regex::Regex::new(pattern).expect("invalid biblatex cleanup pattern");
+        let re = regex::Regex::new(pattern).expect("invalid bibliography cleanup pattern");
         result = re.replace_all(&result, "").to_string();
     }
 
@@ -398,14 +401,14 @@ mod tests {
     }
 
     #[test]
-    fn configure_biblatex_removes_nocite_and_disabled_setup() {
+    fn configure_bibliography_removes_nocite_and_disabled_setup() {
         let input = "\\usepackage[style=gb7714-2015]{biblatex}\n\\addbibresource{references.bib}\n\\nocite{*}\n\\printbibliography\n";
-        let enabled = configure_biblatex(input, true);
+        let enabled = configure_bibliography(input, true);
         assert!(enabled.contains("biblatex"));
         assert!(enabled.contains("printbibliography"));
         assert!(!enabled.contains("nocite"));
 
-        let disabled = configure_biblatex(input, false);
+        let disabled = configure_bibliography(input, false);
         assert!(!disabled.contains("biblatex"));
         assert!(!disabled.contains("addbibresource"));
         assert!(!disabled.contains("printbibliography"));
@@ -413,9 +416,9 @@ mod tests {
     }
 
     #[test]
-    fn configure_biblatex_removes_inline_nocite() {
+    fn configure_bibliography_removes_inline_nocite() {
         let input = "\\AtBeginDocument{\\nocite{*}}\n";
-        let configured = configure_biblatex(input, true);
+        let configured = configure_bibliography(input, true);
         assert!(!configured.contains("\\nocite{*}"), "{configured}");
         assert_eq!(configured, "\\AtBeginDocument{}\n");
     }

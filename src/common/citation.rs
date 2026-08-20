@@ -97,7 +97,7 @@ fn collect_inlines(inlines: &[Inline], keys: &mut BTreeSet<String>) {
             Inline::Citation(cited) => keys.extend(cited.iter().cloned()),
             // 加粗 / 斜体内部可再嵌套引用（parser 会递归解析，emitter 也会递归输出
             // \cite），校验必须同样下钻，否则加粗引用的 key 校验被绕过、has_citations
-            // 假阴性会漏掉 \addbibresource / \printbibliography。
+            // 假阴性会漏掉 \bibliography{references}。
             Inline::Bold(children) | Inline::Italic(children) => collect_inlines(children, keys),
             _ => {}
         }

@@ -55,16 +55,39 @@
 %% 字体配置
 %% ============================================================
 \newcommand{\mainfont}{FZShuSong-Z01}
-\newcommand{\maintitle}{FZXiaoBiaoSong-B05}
+\IfFontExistsTF{FZXiaoBiaoSong-B05}{%
+  \newcommand{\maintitle}{FZXiaoBiaoSong-B05}%
+}{%
+  %% 部分方正小标宋文件（包括 font/fzxbs.ttf）的西文字体家族名带 S。
+  \newcommand{\maintitle}{FZXiaoBiaoSong-B05S}%
+}
 \newcommand{\mainbold}{FZHei-B01}
 \newcommand{\mainitalic}{FZKai-Z03}
 \newcommand{\mainssf}{FZShuSong-Z01}
 \newcommand{\enmainfont}{TeX Gyre Termes}
-\newcommand{\codefont}{LXGW Bright Code}
+\newcommand{\codefont}{JetBrains Mono}
+\newcommand{\codeCJKfont}{FZKai-Z03}
+
+%% research 样式要求精确使用方正字体，不以开源字体静默替代。发布包不分发
+%% 方正字体，因此缺失时给出明确错误，引导用户先安装，而不是等 fontspec
+%% 在正文开始处以较难理解的信息失败。
+\newcommand{\RequireMdxFont}[1]{%
+  \IfFontExistsTF{#1}{}{%
+    \ClassError{md2tex}{Required font '#1' is not installed}{%
+      Install the font into the operating system, then run mdx again.%
+    }%
+  }%
+}
+\RequireMdxFont{\mainfont}
+\RequireMdxFont{\maintitle}
+\RequireMdxFont{\mainbold}
+\RequireMdxFont{\mainitalic}
+\RequireMdxFont{\codefont}
 
 \setCJKmainfont[ItalicFont={\mainitalic}, AutoFakeBold=true]{\mainfont}
 \setmainfont{\enmainfont}
-\setmonofont{\mainbold}
+\setmonofont{\codefont}
+\setCJKmonofont{\codeCJKfont}
 \setCJKfamilyfont{xbs}{\maintitle}
 \newcommand{\bs}{\CJKfamily{xbs}}
 \setCJKfamilyfont{kaiti}{\mainitalic}
@@ -78,9 +101,8 @@
 \newfontfamily\ennumber{\mainfont}
 \newfontfamily\enhei{\mainbold}
 
-%% 代码字体（LXGW Bright Code）
-\setCJKmonofont{\codefont}
-\setCJKfamilyfont{code}{\codefont}
+%% 代码字体：西文 JetBrains Mono，中文方正楷体。
+\setCJKfamilyfont{code}{\codeCJKfont}
 \newfontfamily\codefamily{\codefont}
 \newcommand{\codefontstyle}{\CJKfamily{code}\codefamily}
 

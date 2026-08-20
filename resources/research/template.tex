@@ -3,8 +3,8 @@
 
 % 参考文献设置（仅正文存在 citation 时保留）
 $if(bibliography)$
-\usepackage[style=gb7714-2015]{biblatex}
-\addbibresource{references.bib}
+\usepackage{gbt7714}
+\citestyle{numbers}
 \renewcommand{\bibname}{参考文献}
 $endif$
 
@@ -95,7 +95,7 @@ $body$
 
 % 参考文献
 $if(bibliography)$
-\printbibliography
+\bibliography{references}
 $endif$
 
 \end{document}

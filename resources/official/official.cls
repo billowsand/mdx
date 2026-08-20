@@ -89,6 +89,31 @@
 %% 字体（带 \IfFontExistsTF 兜底）
 %% ============================================================
 
+%% 等宽字体：西文优先 JetBrains Mono，中文优先方正楷体。公文模板继续保留
+%% 系统字体回退，避免仅含正文内容的旧环境因代码字体缺失而失败。
+\IfFontExistsTF{JetBrains Mono}{%
+  \setmonofont{JetBrains Mono}%
+}{%
+  \ClassWarning{official}{字体 'JetBrains Mono' 不可用，西文等宽字体使用系统默认}%
+}
+\IfFontExistsTF{FZKai-Z03}{%
+  \setCJKmonofont{FZKai-Z03}%
+}{%
+  \IfFontExistsTF{楷体_GB2312}{%
+    \setCJKmonofont{楷体_GB2312}%
+  }{%
+    \IfFontExistsTF{KaiTi_GB2312}{%
+      \setCJKmonofont{KaiTi_GB2312}%
+    }{%
+      \IfFontExistsTF{KaiTi}{%
+        \setCJKmonofont{KaiTi}%
+      }{%
+        \ClassWarning{official}{字体 'FZKai-Z03' 不可用，中文等宽字体使用系统默认}%
+      }%
+    }%
+  }%
+}
+
 %% 标题：方正小标宋简体 → FZXiaoBiaoSong-B05 → SimSun
 \IfFontExistsTF{方正小标宋简体}{%
   \setCJKfamilyfont{xbsong}{方正小标宋简体}%
