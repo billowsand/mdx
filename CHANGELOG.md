@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [2.15.1] - 2026-08-20
+
+### 修复
+
+- 修复 manylinux 容器构建后 `target/` 归 root 所有，导致 Linux 发布作业无法下载
+  离线 Tectonic bundle 的问题。
+- 修复 macOS 自带 `sha256sum` 不支持 GNU `--strict` 参数，导致已下载的 Tectonic
+  可执行文件无法通过校验步骤的问题。
+
 ## [2.15.0] - 2026-08-20
 
 ### 新增
