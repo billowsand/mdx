@@ -29,10 +29,31 @@ cp "$repo_root/resources/tectonic/warmup-official.tex" "$build_root/source/"
 cp "$repo_root/resources/tectonic/warmup.bib" "$build_root/source/"
 
 export TECTONIC_CACHE_DIR="$build_root/cache"
+
+compile_online_with_retry() {
+  local document=$1
+  local max_attempts=4
+  local attempt
+  local delay
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if "$tectonic_executable" -X compile "$document"; then
+      return 0
+    fi
+    if ((attempt == max_attempts)); then
+      echo "failed to resolve $document after $max_attempts attempts" >&2
+      return 1
+    fi
+    delay=$((attempt * 15))
+    echo "retrying $document in ${delay}s with the populated cache ($attempt/$max_attempts)" >&2
+    sleep "$delay"
+  done
+}
+
 (
   cd "$build_root/source"
-  "$tectonic_executable" -X compile warmup.tex
-  "$tectonic_executable" -X compile warmup-official.tex
+  compile_online_with_retry warmup.tex
+  compile_online_with_retry warmup-official.tex
 )
 
 data_root="$build_root/cache/bundles/data"
