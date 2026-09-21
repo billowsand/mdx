@@ -8,7 +8,11 @@
 %% ============================================================
 %% 基类
 %% ============================================================
-\LoadClass[linespread=1,openright,twoside]{ctexbook}
+%% fontset=none：本类下面把每一处 CJK 字体都显式设定，不用 ctex 按平台探测的
+%% 字库。探测结果在 Windows、macOS、Tectonic 上各不相同（分别落到系统字体与
+%% fandol），research 样式要求字形可复现，因此这里不留探测余地。\heiti 是本类
+%% 唯一用到的 ctex 字体命令，随字体段一起定义。
+\LoadClass[linespread=1,openright,twoside,fontset=none]{ctexbook}
 
 %% ============================================================
 %% 包加载
@@ -57,56 +61,99 @@
 %% ============================================================
 %% 字体配置
 %% ============================================================
-\newcommand{\mainfont}{FZShuSong-Z01}
-\IfFontExistsTF{FZXiaoBiaoSong-B05}{%
-  \newcommand{\maintitle}{FZXiaoBiaoSong-B05}%
-}{%
-  %% 部分方正小标宋文件（包括 font/fzxbs.ttf）的西文字体家族名带 S。
-  \newcommand{\maintitle}{FZXiaoBiaoSong-B05S}%
-}
-\newcommand{\mainbold}{FZHei-B01}
-\newcommand{\mainitalic}{FZKai-Z03}
-\newcommand{\mainssf}{FZShuSong-Z01}
-\newcommand{\enmainfont}{TeX Gyre Termes}
-\newcommand{\codefont}{JetBrains Mono}
-\newcommand{\codeCJKfont}{FZKai-Z03}
+%% 字体有两种来源，由 \MdxFontPath 是否为空决定：
+%%
+%% - 宿主程序（如公文助手）把随发行包分发的字体放进一个目录并在
+%%   \documentclass 之前注入 \MdxFontPath 时，下面按**文件名**从该目录加载。
+%%   任何一台机器都不必先安装方正字体，也不会因本机碰巧装了同名字体而排出
+%%   另一种字形——这是发行包能"装上就能用"的前提。
+%% - 直接用 mdx 命令行时 \MdxFontPath 为空，保持原有行为：按 family name 查询
+%%   系统已安装的字体，缺失时明确报错引导安装。
+%%
+%% 两条分支设定的 family 完全相同，正文宏（\bs \kai \song \fs 等）在分支外
+%% 统一定义，改其中一条时另一条必须同步。
+\providecommand{\MdxFontPath}{}
+%% 不用 \ifx 与 \@empty 比较：\providecommand 定义的空宏是 long macro，与
+%% \@empty 的定义属性不同，内容虽为空也会被判成非空。
+\if\relax\detokenize\expandafter{\MdxFontPath}\relax
+  \newcommand{\mainfont}{FZShuSong-Z01}
+  \IfFontExistsTF{FZXiaoBiaoSong-B05}{%
+    \newcommand{\maintitle}{FZXiaoBiaoSong-B05}%
+  }{%
+    %% 部分方正小标宋文件（包括 font/fzxbs.ttf）的西文字体家族名带 S。
+    \newcommand{\maintitle}{FZXiaoBiaoSong-B05S}%
+  }
+  \newcommand{\mainbold}{FZHei-B01}
+  \newcommand{\mainitalic}{FZKai-Z03}
+  \newcommand{\mainssf}{FZShuSong-Z01}
+  \newcommand{\enmainfont}{TeX Gyre Termes}
+  \newcommand{\codefont}{JetBrains Mono}
+  \newcommand{\codeCJKfont}{FZKai-Z03}
 
-%% research 样式要求精确使用方正字体，不以开源字体静默替代。发布包不分发
-%% 方正字体，因此缺失时给出明确错误，引导用户先安装，而不是等 fontspec
-%% 在正文开始处以较难理解的信息失败。
-\newcommand{\RequireMdxFont}[1]{%
-  \IfFontExistsTF{#1}{}{%
-    \ClassError{md2tex}{Required font '#1' is not installed}{%
-      Install the font into the operating system, then run mdx again.%
+  %% research 样式要求精确使用方正字体，不以开源字体静默替代。命令行模式不
+  %% 分发方正字体，因此缺失时给出明确错误，引导用户先安装，而不是等 fontspec
+  %% 在正文开始处以较难理解的信息失败。
+  \newcommand{\RequireMdxFont}[1]{%
+    \IfFontExistsTF{#1}{}{%
+      \ClassError{md2tex}{Required font '#1' is not installed}{%
+        Install the font into the operating system, then run mdx again.%
+      }%
     }%
-  }%
-}
-\RequireMdxFont{\mainfont}
-\RequireMdxFont{\maintitle}
-\RequireMdxFont{\mainbold}
-\RequireMdxFont{\mainitalic}
-\RequireMdxFont{\codefont}
+  }
+  \RequireMdxFont{\mainfont}
+  \RequireMdxFont{\maintitle}
+  \RequireMdxFont{\mainbold}
+  \RequireMdxFont{\mainitalic}
+  \RequireMdxFont{\codefont}
 
-\setCJKmainfont[ItalicFont={\mainitalic}, AutoFakeBold=true]{\mainfont}
-\setmainfont{\enmainfont}
-\setmonofont{\codefont}
-\setCJKmonofont{\codeCJKfont}
-\setCJKfamilyfont{xbs}{\maintitle}
+  \setCJKmainfont[ItalicFont={\mainitalic}, AutoFakeBold=true]{\mainfont}
+  \setmainfont{\enmainfont}
+  \setmonofont{\codefont}
+  \setCJKmonofont{\codeCJKfont}
+  \setCJKfamilyfont{xbs}{\maintitle}
+  \setCJKfamilyfont{kaiti}{\mainitalic}
+  \setCJKfamilyfont{songti}{\mainfont}
+  \setCJKfamilyfont{fangsong}{\mainssf}
+  \setCJKfamilyfont{heiti}{\mainbold}
+  \setCJKfamilyfont{code}{\codeCJKfont}
+  \newfontfamily\encircle{\mainfont}
+  \newfontfamily\enxbs{\maintitle}
+  \newfontfamily\ennumber{\mainfont}
+  \newfontfamily\enhei{\mainbold}
+  \newfontfamily\codefamily{\codefont}
+\else
+  %% 文件名是宿主与本类之间的约定，改名等于改协议。西文正文四个字重齐全，
+  %% 等宽西文只有 Regular，粗斜体交给 fontspec 合成。
+  \setCJKmainfont[Path=\MdxFontPath, ItalicFont={FZKai.ttf}, AutoFakeBold=true]{FZShuSong.ttf}
+  \setmainfont[Path=\MdxFontPath,
+    BoldFont={texgyretermes-bold.otf},
+    ItalicFont={texgyretermes-italic.otf},
+    BoldItalicFont={texgyretermes-bolditalic.otf}]{texgyretermes-regular.otf}
+  \setmonofont[Path=\MdxFontPath]{JetBrainsMono-Regular.ttf}
+  \setCJKmonofont[Path=\MdxFontPath]{FZKai.ttf}
+  \setCJKfamilyfont{xbs}[Path=\MdxFontPath]{FZXiaoBiaoSong.ttf}
+  \setCJKfamilyfont{kaiti}[Path=\MdxFontPath]{FZKai.ttf}
+  \setCJKfamilyfont{songti}[Path=\MdxFontPath]{FZShuSong.ttf}
+  \setCJKfamilyfont{fangsong}[Path=\MdxFontPath]{FZShuSong.ttf}
+  \setCJKfamilyfont{heiti}[Path=\MdxFontPath]{FZHei.ttf}
+  \setCJKfamilyfont{code}[Path=\MdxFontPath]{FZKai.ttf}
+  \newfontfamily\encircle[Path=\MdxFontPath]{FZShuSong.ttf}
+  \newfontfamily\enxbs[Path=\MdxFontPath]{FZXiaoBiaoSong.ttf}
+  \newfontfamily\ennumber[Path=\MdxFontPath]{FZShuSong.ttf}
+  \newfontfamily\enhei[Path=\MdxFontPath]{FZHei.ttf}
+  \newfontfamily\codefamily[Path=\MdxFontPath]{JetBrainsMono-Regular.ttf}
+\fi
+
 \newcommand{\bs}{\CJKfamily{xbs}}
-\setCJKfamilyfont{kaiti}{\mainitalic}
 \newcommand{\kai}{\CJKfamily{kaiti}}
-\setCJKfamilyfont{songti}{\mainfont}
 \newcommand{\song}{\CJKfamily{songti}}
-\setCJKfamilyfont{fangsong}{\mainssf}
 \newcommand{\fs}{\CJKfamily{fangsong}}
-\newfontfamily\encircle{\mainfont}
-\newfontfamily\enxbs{\maintitle}
-\newfontfamily\ennumber{\mainfont}
-\newfontfamily\enhei{\mainbold}
+%% fontset=none 下 ctex 不定义 \heiti，本类自己补上；\providecommand 让将来
+%% 换回带字库的 fontset 时也不会撞车。
+\providecommand{\heiti}{}
+\renewcommand{\heiti}{\CJKfamily{heiti}}
 
 %% 代码字体：西文 JetBrains Mono，中文方正楷体。
-\setCJKfamilyfont{code}{\codeCJKfont}
-\newfontfamily\codefamily{\codefont}
 \newcommand{\codefontstyle}{\CJKfamily{code}\codefamily}
 
 %% ============================================================
