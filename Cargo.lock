@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "mdx"
-version = "2.16.1"
+version = "2.16.2"
 dependencies = [
  "anyhow",
  "biblatex",
