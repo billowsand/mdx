@@ -36,6 +36,9 @@
 \RequirePackage{titlesec}
 \RequirePackage{tocloft}
 \RequirePackage{listings}
+%% 数学公式支持（mathtools 依赖并自动加载 amsmath，显式列出以便预热同步）
+\RequirePackage{amsmath}
+\RequirePackage{mathtools}
 
 %% hyperref 放在最后，避免冲突
 \RequirePackage[unicode,CJKbookmarks=true,bookmarksopen=true,bookmarksnumbered=true,linktoc=all]{hyperref}

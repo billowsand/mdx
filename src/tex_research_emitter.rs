@@ -202,6 +202,10 @@ impl TexResearchEmitter {
             Block::CodeBlock { lang, content } => {
                 self.emit_code_block(lang, content);
             }
+            Block::Math(content) => {
+                self.reset_list();
+                self.emit_math_block(content);
+            }
             Block::Empty => {
                 // 忽略空行
             }
@@ -478,6 +482,20 @@ impl TexResearchEmitter {
         );
     }
 
+    /// 独立公式块：公式源码原样进 `\[...\]`，不做 LaTeX 转义。
+    /// 摘要模式下公式无法收进 abstract 环境，暂跳过（与代码块一致）。
+    fn emit_math_block(&mut self, content: &str) {
+        if self.in_abstract {
+            return;
+        }
+        if content.trim().is_empty() {
+            return;
+        }
+        self.out.push_str("\\[\n");
+        self.out.push_str(content);
+        self.out.push_str("\n\\]\n\n");
+    }
+
     fn emit_list_item(&mut self, level: u8, content: &[Inline]) {
         // 摘要内仍走旧的 prefix+body 路径，不包环境（摘要作为整体渲染）
         if self.in_abstract {
@@ -737,6 +755,12 @@ fn render_inlines(inlines: &[Inline]) -> String {
                 s.push_str(&escape_latex(t));
                 s.push('}');
             }
+            // 行内公式：公式源码原样进 \(...\)，不做 LaTeX 转义
+            Inline::Math(t) => {
+                s.push_str("\\(");
+                s.push_str(t);
+                s.push_str("\\)");
+            }
         }
     }
     s
@@ -936,6 +960,25 @@ mod tests {
             escape_latex("a&b%c$d#e_f{g}h~i^j"),
             "a\\&b\\%c\\$d\\#e\\_f\\{g\\}h\\textasciitilde{}i\\textasciicircum{}j"
         );
+    }
+
+    #[test]
+    fn test_inline_math_not_escaped() {
+        // 行内公式输出 \(...\)，公式源码原样保留、$ 不再被转义
+        let rendered = render_inlines(&[
+            Inline::Text("公式 ".into()),
+            Inline::Math("E=mc^2".into()),
+            Inline::Text(" 结束".into()),
+        ]);
+        assert_eq!(rendered, "公式 \\(E=mc^2\\) 结束");
+    }
+
+    #[test]
+    fn test_math_block_emits_display_math() {
+        let mut e = TexResearchEmitter::new();
+        e.emit_block(&Block::Math("\\int_0^1 x^2\\,dx=\\frac{1}{3}".into()));
+        let body = test_body(e);
+        assert!(body.contains("\\[\n\\int_0^1 x^2\\,dx=\\frac{1}{3}\n\\]"));
     }
 
     #[test]

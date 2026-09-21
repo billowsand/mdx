@@ -629,6 +629,14 @@ impl MainEmitter {
                 self.list.reset();
                 add_code_block(docx, content)
             }
+            Block::Math(content) => {
+                // docx 不支持公式：降级为源码原文段落
+                self.list.reset();
+                let base_dir = &self.image_base_dir;
+                add_body_paragraph(docx, |p| {
+                    add_inlines(p, &[Inline::Text(format!("$${}$$", content))], base_dir)
+                })
+            }
             Block::Empty => docx,
             Block::Label(_) => {
                 // docx 暂不支持交叉引用锚点，忽略
@@ -863,6 +871,17 @@ impl ChangelogEmitter {
                 };
                 add_table(docx, rows)
             }
+            Block::Math(content) => {
+                // docx 不支持公式：降级为源码原文段落
+                self.list.reset();
+                add_body_paragraph(docx, |p| {
+                    add_inlines(
+                        p,
+                        &[Inline::Text(format!("$${}$$", content))],
+                        &self.image_base_dir,
+                    )
+                })
+            }
             Block::Marker(_) | Block::Empty | Block::CodeBlock { .. } | Block::Label(_) => docx,
         }
     }
@@ -1086,6 +1105,8 @@ fn inline_run_style(ip: &Inline) -> (String, bool, bool) {
         ),
         // docx 暂不生成脚注部件，降级为全角括号内联注释
         Inline::Footnote(t) => (format!("（{}）", t), false, false),
+        // docx 不支持公式，降级为源码原文
+        Inline::Math(t) => (format!("${t}$"), false, false),
     }
 }
 
